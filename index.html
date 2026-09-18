@@ -97,7 +97,7 @@
   }
   .modal h2 { margin-top: 0; font-size: 17px; }
   .modal label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
-  .modal input[type="password"], .modal input[type="text"] {
+  .modal input[type="password"], .modal input[type="text"], .modal select {
     width: 100%; padding: 10px 12px; border-radius: 10px;
     border: 1px solid #333947; background: #12141a; color: var(--text);
     font-size: 14px;
@@ -166,6 +166,9 @@
       キーはこの端末のブラウザ内(localStorage)にのみ保存されます。他の端末とは共有されません。
     </p>
 
+    <label for="voiceSelect">読み上げ音声の種類</label>
+    <select id="voiceSelect"></select>
+
     <label>保存されている長期記憶</label>
     <div id="memList"></div>
     <div class="row">
@@ -179,7 +182,10 @@ const STORAGE_KEY_API = 'ai_partner_gemini_api_key';
 const STORAGE_KEY_MEM = 'ai_partner_memory';
 const STORAGE_KEY_CHAT = 'ai_partner_chat_log';
 const STORAGE_KEY_VOICE = 'ai_partner_voice_enabled';
-const MODEL = 'gemini-3.5-flash-lite';
+const STORAGE_KEY_VOICE_URI = 'ai_partner_voice_uri';
+
+// ★ Liteを外し、より賢い標準モデルに変更 ★
+const MODEL = 'gemini-3.5-flash';
 
 const APP_START_TRIGGER = '(system: ユーザーが今アプリを開きました。過去の記憶を踏まえて、あなたから自然に一言話しかけてください。この指示文自体には言及しないでください。)';
 
@@ -196,27 +202,22 @@ const SYSTEM_INSTRUCTION = `
 重要:
 - ユーザーの発言に自然に反応し、機械的な定型文を避ける
 - 過去の記憶が関連するときだけ自然に利用する
-- 知らないことを知っているふりをしない
-- 記憶にない情報を捏造しない
+- 【重要】わからないこと、最新情報、深い知識が求められる話題については、推測で答えず、必ずGoogle検索機能を利用して調べてから回答すること。
+- 記憶にない個人情報を捏造しない
 - ユーザーの感情を決めつけない
 - 回答は通常、簡潔すぎず長すぎない
 - 日本語で回答する
-- ユーザーの発言が「(system: ...)」で始まる場合、それはアプリ起動を知らせる内部合図であり、
-  ユーザー本人の発言ではない。その場合は過去の記憶を踏まえて自然に一言話しかけてください。
-  合図の文面自体には触れず、あくまで自分から話しかけたように振る舞うこと。
+- ユーザーの発言が「(system: ...)」で始まる場合、それはアプリ起動を知らせる内部合図であり、ユーザー本人の発言ではない。その場合は過去の記憶を踏まえて自然に一言話しかけてください。合図の文面自体には触れないこと。
 
 記憶の管理について(重要):
 提示される「現在保存されている長期記憶」には、それぞれ[id]が付いています。
 新しい発言を踏まえて、以下のいずれかのアクションを memory_updates に含めてください。
 
 - "add"    : 全く新しい情報を追加する(idは不要)
-- "update" : 既存の記憶が古くなった・間違っていた・より正確な情報に更新すべき場合、
-             既存の[id]を指定して内容を書き換える(似た内容の新規追加より、既存の更新を優先すること)
-- "delete" : 既存の記憶がもう有効ではなく、更新でもなく単純に不要になった場合、
-             既存の[id]を指定して削除する
+- "update" : 既存の記憶が古くなった・間違っていた・より正確な情報に更新すべき場合、既存の[id]を指定して内容を書き換える
+- "delete" : 既存の記憶がもう有効ではなく、更新でもなく単純に不要になった場合、既存の[id]を指定して削除する
 
 同じ内容・似た内容の記憶が既にある場合は、新規追加(add)ではなく、その記憶を更新(update)して1つにまとめてください。
-矛盾する情報(例:「B社に勤務」→「B社を退職した」)は、古い記憶を残したまま追加せず、既存の記憶を更新してください。
 
 あなたの出力はJSONのみ:
 {
@@ -228,9 +229,7 @@ const SYSTEM_INSTRUCTION = `
   ]
 }
 
-importanceは1〜5。
-一時的な話題、単なる質問、秘密やパスワードなどは記憶しないでください。
-記憶の変更が不要なら memory_updates は空配列にしてください。
+importanceは1〜5。一時的な話題は記憶しないでください。記憶の変更が不要なら memory_updates は空配列にしてください。
 `;
 
 function generateId() {
@@ -302,7 +301,6 @@ function applyMemoryActions(existingMemories, actions) {
     const importance = Math.max(1, Math.min(5, parseInt(act.importance, 10) || 3));
     map.set(id, { id, text, importance, created_at: now, updated_at: now });
   }
-
   return Array.from(map.values());
 }
 
@@ -365,16 +363,17 @@ function buildPrompt(userMessage, allMemories) {
 
 async function callGemini(userMessage) {
   const apiKey = localStorage.getItem(STORAGE_KEY_API);
-  if (!apiKey) {
-    throw new Error('NO_API_KEY');
-  }
+  if (!apiKey) throw new Error('NO_API_KEY');
+  
   const memories = loadMemory();
   const prompt = buildPrompt(userMessage, memories);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
+  // ★ 検索ツール(googleSearch) を追加 ★
   const body = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     systemInstruction: { role: 'system', parts: [{ text: SYSTEM_INSTRUCTION }] },
+    tools: [{ googleSearch: {} }],
     generationConfig: { responseMimeType: 'application/json' }
   };
 
@@ -436,7 +435,6 @@ function saveChatLog(log) {
 
 let chatLog = loadChatLog();
 
-// 起動時はチャット画面をリセットし、APIキーがあれば挨拶トリガーを実行
 if (localStorage.getItem(STORAGE_KEY_API)) {
   triggerOpeningMessage();
 } else {
@@ -476,7 +474,7 @@ formEl.addEventListener('submit', async (e) => {
   inputEl.value = '';
   sendBtn.disabled = true;
 
-  const thinkingEl = addMessage('system', '…考え中…');
+  const thinkingEl = addMessage('system', '…考え中(検索している場合があります)…');
 
   try {
     const reply = await callGemini(text);
@@ -615,22 +613,49 @@ document.getElementById('clearMemBtn').addEventListener('click', () => {
   }
 });
 
-// ---- 音声読み上げ ----
+// ---- 音声読み上げ & 声の選択機能 ----
 let voiceEnabled = localStorage.getItem(STORAGE_KEY_VOICE) !== '0';
 const voiceToggleBtn = document.getElementById('voiceToggle');
-let jaVoice = null;
+const voiceSelect = document.getElementById('voiceSelect');
+let availableVoices = [];
 
-function pickJaVoice() {
+function populateVoices() {
   if (!window.speechSynthesis) return;
-  const voices = speechSynthesis.getVoices();
-  jaVoice = voices.find(v => v.lang && v.lang.toLowerCase().startsWith('ja')) || null;
+  // 日本語の音声のみを抽出
+  availableVoices = speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('ja'));
+  voiceSelect.innerHTML = '';
+  
+  if (availableVoices.length === 0) {
+    const opt = document.createElement('option');
+    opt.textContent = '利用可能な日本語音声がありません';
+    voiceSelect.appendChild(opt);
+    return;
+  }
+
+  availableVoices.forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v.voiceURI;
+    // 名前が長すぎる場合は省略
+    opt.textContent = `${v.name} (${v.lang})`;
+    voiceSelect.appendChild(opt);
+  });
+
+  const savedURI = localStorage.getItem(STORAGE_KEY_VOICE_URI);
+  if (savedURI && availableVoices.find(v => v.voiceURI === savedURI)) {
+    voiceSelect.value = savedURI;
+  }
 }
+
 if (window.speechSynthesis) {
-  pickJaVoice();
-  speechSynthesis.addEventListener('voiceschanged', pickJaVoice);
+  populateVoices();
+  speechSynthesis.addEventListener('voiceschanged', populateVoices);
 } else {
   voiceEnabled = false;
 }
+
+voiceSelect.addEventListener('change', () => {
+  localStorage.setItem(STORAGE_KEY_VOICE_URI, voiceSelect.value);
+});
 
 function updateVoiceToggleUI() {
   voiceToggleBtn.textContent = voiceEnabled ? '🔊' : '🔇';
@@ -656,7 +681,16 @@ function speakText(text) {
     speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ja-JP';
-    if (jaVoice) utter.voice = jaVoice;
+    
+    // 選択された音声を適用
+    const savedURI = localStorage.getItem(STORAGE_KEY_VOICE_URI);
+    const selectedVoice = availableVoices.find(v => v.voiceURI === savedURI);
+    if (selectedVoice) {
+      utter.voice = selectedVoice;
+    } else if (availableVoices.length > 0) {
+      utter.voice = availableVoices[0]; // デフォルト
+    }
+    
     speechSynthesis.speak(utter);
   } catch (err) {
     console.error('speech synthesis error:', err);
