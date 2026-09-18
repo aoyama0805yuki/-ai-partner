@@ -358,15 +358,13 @@ function buildPrompt(userMessage, allMemories) {
   return `現在保存されている長期記憶:\n${memText}\n\n今回のユーザー発言:\n${userMessage}`;
 }
 
-// ★ ここがGASと通信する関数（履歴送信対応版） ★
+// ★ ここがGASと通信する関数（エラー超回避＆原因特定版） ★
 async function callGemini(userMessage) {
   const gasUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
   if (!gasUrl) throw new Error('NO_GAS_URL');
   
   const memories = loadMemory();
   const prompt = buildPrompt(userMessage, memories);
-
-  // ★ 直近20件の会話履歴を取得してバックエンド(GAS)に送る ★
   const recentLog = chatLog.slice(-20);
 
   const body = {
@@ -384,12 +382,25 @@ async function callGemini(userMessage) {
   const raw = await res.text();
   let parsed;
   try {
-    const cleaned = raw.replace(/^```json\n?/, '').replace(/\n?```$/, '');
-    parsed = JSON.parse(cleaned);
+    // 【改良】AIがどんな余計な文字をつけてきても、最初の { から 最後の } までを強引に抽出する
+    const firstBrace = raw.indexOf('{');
+    const lastBrace = raw.lastIndexOf('}');
+    
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      const extracted = raw.substring(firstBrace, lastBrace + 1);
+      parsed = JSON.parse(extracted);
+    } else {
+      // {} が見つからない場合は一応そのままパースに挑戦
+      parsed = JSON.parse(raw);
+    }
   } catch {
-    throw new Error('モデルの応答を解析できませんでした。');
+    // 【改良】それでもパースに失敗した場合、受信した生データをエラー画面に出す
+    console.error("【パース失敗】受信データ:", raw);
+    const preview = raw.substring(0, 80).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    throw new Error(`AIの応答がJSON形式ではありませんでした。\n【受信データの中身】\n${preview}...`);
   }
 
+  // GAS側で意図的なエラーが返された場合
   if (parsed.error) {
     throw new Error(parsed.error);
   }
@@ -397,8 +408,9 @@ async function callGemini(userMessage) {
   const reply = String(parsed.reply || '').trim();
   const actions = Array.isArray(parsed.memory_updates) ? parsed.memory_updates : [];
 
-  if (!reply) throw new Error('有効な返答が得られませんでした。');
+  if (!reply) throw new Error('有効な返答が空っぽでした。');
 
+  // 記憶の保存処理
   if (actions.length) {
     const merged = applyMemoryActions(memories, actions);
     pruneAndPersist(merged);
