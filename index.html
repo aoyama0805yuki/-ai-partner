@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>AIパートナー</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --bubble-user: #2f6fed;
+    --bubble-ai: #262a33;
+    --text: #eaeaea;
+    --muted: #9aa0aa;
+    --accent: #2f6fed;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  }
+  #app {
+    display: flex; flex-direction: column;
+    height: 100dvh; max-width: 640px; margin: 0 auto;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; background: var(--panel);
+    border-bottom: 1px solid #2a2e37;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header button {
+    background: none; border: none; color: var(--text);
+    font-size: 20px; cursor: pointer; padding: 4px 8px;
+  }
+  #chat {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .msg {
+    max-width: 80%; padding: 10px 14px; border-radius: 16px;
+    line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    font-size: 15px;
+  }
+  .msg.user {
+    align-self: flex-end; background: var(--bubble-user); color: white;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.ai {
+    align-self: flex-start; background: var(--bubble-ai);
+    border-bottom-left-radius: 4px;
+  }
+  .msg.system {
+    align-self: center; color: var(--muted); font-size: 12px;
+    background: none; padding: 4px;
+  }
+  #chatForm {
+    display: flex; gap: 8px; padding: 10px;
+    background: var(--panel); border-top: 1px solid #2a2e37;
+  }
+  #msgInput {
+    flex: 1; padding: 12px 14px; border-radius: 20px;
+    border: 1px solid #333947; background: #12141a; color: var(--text);
+    font-size: 15px; outline: none;
+  }
+  #chatForm button {
+    background: var(--accent); color: white; border: none;
+    border-radius: 20px; padding: 0 18px; font-size: 15px; cursor: pointer;
+  }
+  #chatForm button:disabled { opacity: 0.5; }
+
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: flex-end; justify-content: center; z-index: 10;
+  }
+  .modal-backdrop.hidden { display: none; }
+  .modal {
+    background: var(--panel); width: 100%; max-width: 640px;
+    border-radius: 16px 16px 0 0; padding: 20px;
+    max-height: 80vh; overflow-y: auto;
+  }
+  .modal h2 { margin-top: 0; font-size: 17px; }
+  .modal label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+  .modal input[type="password"], .modal input[type="text"] {
+    width: 100%; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid #333947; background: #12141a; color: var(--text);
+    font-size: 14px;
+  }
+  .modal .row { display: flex; gap: 8px; margin-top: 10px; }
+  .modal button {
+    flex: 1; padding: 10px; border-radius: 10px; border: none;
+    font-size: 14px; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-danger { background: #4a2229; color: #ff9b9b; }
+  .btn-secondary { background: #2a2e37; color: var(--text); }
+  .mem-item {
+    background: #12141a; border-radius: 10px; padding: 8px 10px;
+    margin-bottom: 6px; font-size: 13px; color: #cfd3da;
+  }
+  .mem-item span.imp { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  #memList { margin-top: 10px; }
+  .close-x { position: absolute; top: 14px; right: 16px; }
+  .modal { position: relative; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>AIパートナー</h1>
+    <button id="openSettings" aria-label="設定">⚙️</button>
+  </header>
+  <div id="chat"></div>
+  <form id="chatForm">
+    <input id="msgInput" type="text" placeholder="メッセージを入力..." autocomplete="off" />
+    <button type="submit" id="sendBtn">送信</button>
+  </form>
+</div>
+
+<div class="modal-backdrop hidden" id="settingsModal">
+  <div class="modal">
+    <button class="close-x" id="closeSettings">✕</button>
+    <h2>設定</h2>
+
+    <label for="apiKeyInput">Gemini APIキー</label>
+    <input type="password" id="apiKeyInput" placeholder="AIza..." />
+    <div class="row">
+      <button class="btn-primary" id="saveKeyBtn">保存</button>
+      <button class="btn-danger" id="clearKeyBtn">キー削除</button>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-top:8px;">
+      キーはこの端末のブラウザ内(localStorage)にのみ保存されます。他の端末とは共有されません。
+    </p>
+
+    <label>保存されている長期記憶</label>
+    <div id="memList"></div>
+    <div class="row">
+      <button class="btn-danger" id="clearMemBtn">記憶を全て削除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY_API = 'ai_partner_gemini_api_key';
+const STORAGE_KEY_MEM = 'ai_partner_memory';
+const STORAGE_KEY_CHAT = 'ai_partner_chat_log';
+const MODEL = 'gemini-3.5-flash-lite';
+
+const DECAY_DAYS = 14;          // この日数ごとに実効重要度が1下がる(老朽化)
+const MAX_MEMORIES = 100;       // 保存する記憶の総数上限
+const CORE_MEMORY_COUNT = 15;   // 毎回プロンプトに含める「人物像コア」記憶の数
+const PROMPT_MEMORY_LIMIT = 40; // 1回のプロンプトに渡す記憶の総数上限
+
+const SYSTEM_INSTRUCTION = `
+あなたはユーザー専用のAIパートナーです。
+親しみやすく自然な日本語で会話してください。
+会話をただのQ&Aではなく、継続的な関係として扱ってください。
+
+重要:
+- ユーザーの発言に自然に反応し、機械的な定型文を避ける
+- 過去の記憶が関連するときだけ自然に利用する
+- 知らないことを知っているふりをしない
+- 記憶にない情報を捏造しない
+- ユーザーの感情を決めつけない
+- 回答は通常、簡潔すぎず長すぎない
+- 日本語で回答する
+
+記憶の管理について(重要):
+提示される「現在保存されている長期記憶」には、それぞれ[id]が付いています。
+新しい発言を踏まえて、以下のいずれかのアクションを memory_updates に含めてください。
+
+- "add"    : 全く新しい情報を追加する(idは不要)
+- "update" : 既存の記憶が古くなった・間違っていた・より正確な情報に更新すべき場合、
+             既存の[id]を指定して内容を書き換える(似た内容の新規追加より、既存の更新を優先すること)
+- "delete" : 既存の記憶がもう有効ではなく、更新でもなく単純に不要になった場合、
+             既存の[id]を指定して削除する
+
+同じ内容・似た内容の記憶が既にある場合は、新規追加(add)ではなく、その記憶を更新(update)して1つにまとめてください。
+矛盾する情報(例:「B社に勤務」→「B社を退職した」)は、古い記憶を残したまま追加せず、既存の記憶を更新してください。
+
+あなたの出力はJSONのみ:
+{
+  "reply": "ユーザーへの自然な返答",
+  "memory_updates": [
+    { "action": "add", "text": "今後も役立つ、ユーザーについての具体的な記憶", "importance": 1 },
+    { "action": "update", "id": "既存記憶のid", "text": "更新後の内容", "importance": 3 },
+    { "action": "delete", "id": "既存記憶のid" }
+  ]
+}
+
+importanceは1〜5。
+一時的な話題、単なる質問、秘密やパスワードなどは記憶しないでください。
+記憶の変更が不要なら memory_updates は空配列にしてください。
+`;
+
+function generateId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+// 旧バージョン(id・updated_atなし)のデータを新形式へ移行する
+function migrateMemory(raw) {
+  const now = Date.now();
+  return raw.map(m => ({
+    id: m.id || generateId(),
+    text: String(m.text || '').trim(),
+    importance: Math.max(1, Math.min(5, parseInt(m.importance, 10) || 3)),
+    created_at: m.created_at || now,
+    updated_at: m.updated_at || m.created_at || now
+  })).filter(m => m.text);
+}
+
+function loadMemory() {
+  try {
+    return migrateMemory(JSON.parse(localStorage.getItem(STORAGE_KEY_MEM) || '[]'));
+  } catch { return []; }
+}
+
+function daysSince(timestamp) {
+  return Math.max(0, (Date.now() - timestamp) / (1000 * 60 * 60 * 24));
+}
+
+// 老朽化(風化): 保存されている importance 自体は変えず、経過日数に応じた実効値だけ下げる
+function effectiveImportance(m) {
+  const decay = Math.floor(daysSince(m.updated_at) / DECAY_DAYS);
+  return Math.max(1, m.importance - decay);
+}
+
+function pruneAndPersist(memories) {
+  const sorted = [...memories].sort((a, b) => {
+    const diff = effectiveImportance(b) - effectiveImportance(a);
+    return diff !== 0 ? diff : b.updated_at - a.updated_at;
+  });
+  const trimmed = sorted.slice(0, MAX_MEMORIES);
+  localStorage.setItem(STORAGE_KEY_MEM, JSON.stringify(trimmed));
+  return trimmed;
+}
+
+// Geminiが返した add/update/delete アクションを既存記憶に適用する
+function applyMemoryActions(existingMemories, actions) {
+  const map = new Map(existingMemories.map(m => [m.id, m]));
+  const now = Date.now();
+
+  for (const act of actions) {
+    if (!act || typeof act !== 'object') continue;
+    const action = act.action || 'add';
+
+    if (action === 'delete') {
+      if (act.id && map.has(act.id)) map.delete(act.id);
+      continue;
+    }
+
+    if (action === 'update' && act.id && map.has(act.id)) {
+      const old = map.get(act.id);
+      const text = String(act.text || '').trim() || old.text;
+      const importance = act.importance != null
+        ? Math.max(1, Math.min(5, parseInt(act.importance, 10) || old.importance))
+        : old.importance;
+      map.set(act.id, { ...old, text, importance, updated_at: now });
+      continue;
+    }
+
+    // action === 'add'、または id不明な update のフォールバック
+    const text = String(act.text || '').trim();
+    if (!text) continue;
+    const id = generateId();
+    const importance = Math.max(1, Math.min(5, parseInt(act.importance, 10) || 3));
+    map.set(id, { id, text, importance, created_at: now, updated_at: now });
+  }
+
+  return Array.from(map.values());
+}
+
+// ---- 文脈に関連した記憶の選択(埋め込みは使わず、文字bigramの類似度で簡易判定) ----
+function bigrams(str) {
+  const s = String(str || '').replace(/\s+/g, '');
+  if (s.length < 2) return s ? [s] : [];
+  const arr = [];
+  for (let i = 0; i < s.length - 1; i++) arr.push(s.substring(i, i + 2));
+  return arr;
+}
+
+function diceCoefficient(a, b) {
+  const bgA = bigrams(a);
+  const bgB = bigrams(b);
+  if (bgA.length === 0 || bgB.length === 0) return 0;
+  const counts = new Map();
+  for (const bg of bgB) counts.set(bg, (counts.get(bg) || 0) + 1);
+  let matches = 0;
+  for (const bg of bgA) {
+    const c = counts.get(bg);
+    if (c > 0) { matches++; counts.set(bg, c - 1); }
+  }
+  return (2 * matches) / (bgA.length + bgB.length);
+}
+
+function selectMemoriesForPrompt(userMessage, memories) {
+  const withScore = memories.map(m => ({ m, eff: effectiveImportance(m) }));
+  withScore.sort((a, b) => b.eff - a.eff);
+
+  // 常に上位N件(実効重要度順)は「人物像のコア」として毎回含める
+  const core = withScore.slice(0, CORE_MEMORY_COUNT).map(x => x.m);
+  const coreIds = new Set(core.map(m => m.id));
+
+  // 残りは今回の発言との類似度 + 実効重要度でスコアリングして選ぶ
+  const rest = withScore.filter(x => !coreIds.has(x.m.id));
+  const relevanceScored = rest.map(x => ({
+    m: x.m,
+    score: diceCoefficient(userMessage, x.m.text) * 5 + x.eff
+  }));
+  relevanceScored.sort((a, b) => b.score - a.score);
+
+  const remainingSlots = Math.max(0, PROMPT_MEMORY_LIMIT - core.length);
+  const relevant = relevanceScored.slice(0, remainingSlots).map(x => x.m);
+
+  return [...core, ...relevant];
+}
+
+function formatRelativeDays(timestamp) {
+  const d = Math.floor(daysSince(timestamp));
+  if (d <= 0) return '今日';
+  if (d === 1) return '1日前';
+  return `${d}日前`;
+}
+
+function buildPrompt(userMessage, allMemories) {
+  const selected = selectMemoriesForPrompt(userMessage, allMemories);
+  const memText = selected.map(m =>
+    `- [id:${m.id}] ${m.text} (重要度 ${effectiveImportance(m)}/5, 更新: ${formatRelativeDays(m.updated_at)})`
+  ).join('\n') || '（まだ長期記憶はありません）';
+  return `現在保存されている長期記憶:\n${memText}\n\n今回のユーザー発言:\n${userMessage}`;
+}
+
+async function callGemini(userMessage) {
+  const apiKey = localStorage.getItem(STORAGE_KEY_API);
+  if (!apiKey) {
+    throw new Error('NO_API_KEY');
+  }
+  const memories = loadMemory();
+  const prompt = buildPrompt(userMessage, memories);
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    systemInstruction: { role: 'system', parts: [{ text: SYSTEM_INSTRUCTION }] },
+    generationConfig: { responseMimeType: 'application/json' }
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+
+  if (!res.ok) {
+    const msg = data?.error?.message || `HTTPエラー ${res.status}`;
+    throw new Error(msg);
+  }
+
+  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('モデルの応答をJSONとして解析できませんでした。');
+  }
+
+  const reply = String(parsed.reply || '').trim();
+  const actions = Array.isArray(parsed.memory_updates) ? parsed.memory_updates : [];
+
+  if (!reply) throw new Error('有効な返答が得られませんでした。');
+
+  if (actions.length) {
+    const merged = applyMemoryActions(memories, actions);
+    pruneAndPersist(merged);
+  }
+
+  return reply;
+}
+
+// ---- UI wiring ----
+const chatEl = document.getElementById('chat');
+const formEl = document.getElementById('chatForm');
+const inputEl = document.getElementById('msgInput');
+const sendBtn = document.getElementById('sendBtn');
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.textContent = text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function loadChatLog() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY_CHAT) || '[]'); }
+  catch { return []; }
+}
+function saveChatLog(log) {
+  localStorage.setItem(STORAGE_KEY_CHAT, JSON.stringify(log.slice(-200)));
+}
+
+let chatLog = loadChatLog();
+chatLog.forEach(m => addMessage(m.role, m.text));
+if (chatLog.length === 0) {
+  addMessage('system', 'メッセージを送るとAIパートナーと会話が始まります。右上の⚙️からAPIキーを設定してください。');
+}
+
+formEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = inputEl.value.trim();
+  if (!text) return;
+
+  addMessage('user', text);
+  chatLog.push({ role: 'user', text });
+  saveChatLog(chatLog);
+  inputEl.value = '';
+  sendBtn.disabled = true;
+
+  const thinkingEl = addMessage('system', '…考え中…');
+
+  try {
+    const reply = await callGemini(text);
+    thinkingEl.remove();
+    addMessage('ai', reply);
+    chatLog.push({ role: 'ai', text: reply });
+    saveChatLog(chatLog);
+  } catch (err) {
+    thinkingEl.remove();
+    if (err.message === 'NO_API_KEY') {
+      addMessage('system', 'APIキーが未設定です。右上の⚙️から設定してください。');
+      openSettingsModal();
+    } else {
+      addMessage('system', `エラー: ${err.message}`);
+    }
+  } finally {
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+});
+
+// ---- Settings modal ----
+const settingsModal = document.getElementById('settingsModal');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const memList = document.getElementById('memList');
+
+function renderMemList() {
+  const memories = loadMemory().sort((a, b) => effectiveImportance(b) - effectiveImportance(a));
+  memList.innerHTML = '';
+  if (memories.length === 0) {
+    memList.innerHTML = '<p style="color:var(--muted);font-size:13px;">まだ記憶はありません。</p>';
+    return;
+  }
+  memories.forEach(m => {
+    const div = document.createElement('div');
+    div.className = 'mem-item';
+
+    const textDiv = document.createElement('div');
+    textDiv.textContent = m.text;
+    div.appendChild(textDiv);
+
+    const eff = effectiveImportance(m);
+    const decayNote = eff < m.importance ? `(老朽化により実効${eff})` : '';
+    const span = document.createElement('span');
+    span.className = 'imp';
+    span.textContent = `重要度 ${m.importance}/5 ${decayNote} ・更新: ${formatRelativeDays(m.updated_at)}`;
+    div.appendChild(span);
+
+    const delBtn = document.createElement('button');
+    delBtn.textContent = '削除';
+    delBtn.style.cssText = 'display:block;margin-top:6px;background:#3a2229;color:#ff9b9b;border:none;border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer;';
+    delBtn.addEventListener('click', () => {
+      const remaining = loadMemory().filter(x => x.id !== m.id);
+      localStorage.setItem(STORAGE_KEY_MEM, JSON.stringify(remaining));
+      renderMemList();
+    });
+    div.appendChild(delBtn);
+
+    memList.appendChild(div);
+  });
+}
+
+function openSettingsModal() {
+  const existing = localStorage.getItem(STORAGE_KEY_API) || '';
+  apiKeyInput.value = existing;
+  renderMemList();
+  settingsModal.classList.remove('hidden');
+}
+function closeSettingsModal() {
+  settingsModal.classList.add('hidden');
+}
+
+document.getElementById('openSettings').addEventListener('click', openSettingsModal);
+document.getElementById('closeSettings').addEventListener('click', closeSettingsModal);
+settingsModal.addEventListener('click', (e) => {
+  if (e.target === settingsModal) closeSettingsModal();
+});
+
+document.getElementById('saveKeyBtn').addEventListener('click', () => {
+  const key = apiKeyInput.value.trim();
+  if (!key) { alert('キーを入力してください。'); return; }
+  localStorage.setItem(STORAGE_KEY_API, key);
+  closeSettingsModal();
+});
+
+document.getElementById('clearKeyBtn').addEventListener('click', () => {
+  if (confirm('保存済みのAPIキーを削除しますか？')) {
+    localStorage.removeItem(STORAGE_KEY_API);
+    apiKeyInput.value = '';
+  }
+});
+
+document.getElementById('clearMemBtn').addEventListener('click', () => {
+  if (confirm('全ての長期記憶を削除しますか？この操作は元に戻せません。')) {
+    localStorage.removeItem(STORAGE_KEY_MEM);
+    renderMemList();
+  }
+});
+</script>
+</body>
+</html>
