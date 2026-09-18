@@ -69,6 +69,21 @@
     border-radius: 20px; padding: 0 18px; font-size: 15px; cursor: pointer;
   }
   #chatForm button:disabled { opacity: 0.5; }
+  #micBtn {
+    background: #2a2e37; color: var(--text); border: none;
+    border-radius: 50%; width: 40px; height: 40px; min-width: 40px;
+    font-size: 16px; cursor: pointer; flex-shrink: 0;
+  }
+  #micBtn.listening {
+    background: #b3392f; color: white;
+    animation: mic-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes mic-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(179,57,47,0.6); }
+    70%  { box-shadow: 0 0 0 10px rgba(179,57,47,0); }
+    100% { box-shadow: 0 0 0 0 rgba(179,57,47,0); }
+  }
+  #voiceToggle.muted { opacity: 0.5; }
 
   .modal-backdrop {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
@@ -109,10 +124,14 @@
 <div id="app">
   <header>
     <h1>AIパートナー</h1>
-    <button id="openSettings" aria-label="設定">⚙️</button>
+    <div style="display:flex; gap:4px;">
+      <button id="voiceToggle" aria-label="音声読み上げ切替">🔊</button>
+      <button id="openSettings" aria-label="設定">⚙️</button>
+    </div>
   </header>
   <div id="chat"></div>
   <form id="chatForm">
+    <button type="button" id="micBtn" aria-label="音声入力">🎤</button>
     <input id="msgInput" type="text" placeholder="メッセージを入力..." autocomplete="off" />
     <button type="submit" id="sendBtn">送信</button>
   </form>
@@ -145,7 +164,11 @@
 const STORAGE_KEY_API = 'ai_partner_gemini_api_key';
 const STORAGE_KEY_MEM = 'ai_partner_memory';
 const STORAGE_KEY_CHAT = 'ai_partner_chat_log';
+const STORAGE_KEY_VOICE = 'ai_partner_voice_enabled';
 const MODEL = 'gemini-3.5-flash-lite';
+
+// アプリ起動時にAI側から話しかけてもらうための内部トリガーメッセージ(画面には表示しない)
+const APP_START_TRIGGER = '(system: ユーザーが今アプリを開きました。過去の記憶を踏まえて、あなたから自然に一言話しかけてください。この指示文自体には言及しないでください。)';
 
 const DECAY_DAYS = 14;          // この日数ごとに実効重要度が1下がる(老朽化)
 const MAX_MEMORIES = 100;       // 保存する記憶の総数上限
@@ -165,6 +188,9 @@ const SYSTEM_INSTRUCTION = `
 - ユーザーの感情を決めつけない
 - 回答は通常、簡潔すぎず長すぎない
 - 日本語で回答する
+- ユーザーの発言が「(system: ...)」で始まる場合、それはアプリ起動を知らせる内部合図であり、
+  ユーザー本人の発言ではない。その場合は過去の記憶を踏まえて自然に一言話しかけてください。
+  合図の文面自体には触れず、あくまで自分から話しかけたように振る舞うこと。
 
 記憶の管理について(重要):
 提示される「現在保存されている長期記憶」には、それぞれ[id]が付いています。
@@ -406,7 +432,34 @@ function saveChatLog(log) {
 let chatLog = loadChatLog();
 chatLog.forEach(m => addMessage(m.role, m.text));
 if (chatLog.length === 0) {
-  addMessage('system', 'メッセージを送るとAIパートナーと会話が始まります。右上の⚙️からAPIキーを設定してください。');
+  if (localStorage.getItem(STORAGE_KEY_API)) {
+    triggerOpeningMessage();
+  } else {
+    addMessage('system', 'メッセージを送るとAIパートナーと会話が始まります。右上の⚙️からAPIキーを設定してください。');
+  }
+}
+
+// アプリ起動時、AI側から自然に話しかけてもらう
+async function triggerOpeningMessage() {
+  sendBtn.disabled = true;
+  const thinkingEl = addMessage('system', '…考え中…');
+  try {
+    const reply = await callGemini(APP_START_TRIGGER);
+    thinkingEl.remove();
+    addMessage('ai', reply);
+    chatLog.push({ role: 'ai', text: reply });
+    saveChatLog(chatLog);
+    speakText(reply);
+  } catch (err) {
+    thinkingEl.remove();
+    if (err.message === 'NO_API_KEY') {
+      addMessage('system', 'APIキーが未設定です。右上の⚙️から設定してください。');
+    } else {
+      addMessage('system', `エラー: ${err.message}`);
+    }
+  } finally {
+    sendBtn.disabled = false;
+  }
 }
 
 formEl.addEventListener('submit', async (e) => {
@@ -428,6 +481,7 @@ formEl.addEventListener('submit', async (e) => {
     addMessage('ai', reply);
     chatLog.push({ role: 'ai', text: reply });
     saveChatLog(chatLog);
+    speakText(reply);
   } catch (err) {
     thinkingEl.remove();
     if (err.message === 'NO_API_KEY') {
@@ -519,6 +573,106 @@ document.getElementById('clearMemBtn').addEventListener('click', () => {
     renderMemList();
   }
 });
+
+// ---- 音声読み上げ (Web Speech API: SpeechSynthesis) ----
+let voiceEnabled = localStorage.getItem(STORAGE_KEY_VOICE) !== '0'; // 未設定時はON
+const voiceToggleBtn = document.getElementById('voiceToggle');
+let jaVoice = null;
+
+function pickJaVoice() {
+  if (!window.speechSynthesis) return;
+  const voices = speechSynthesis.getVoices();
+  jaVoice = voices.find(v => v.lang && v.lang.toLowerCase().startsWith('ja')) || null;
+}
+if (window.speechSynthesis) {
+  pickJaVoice();
+  speechSynthesis.addEventListener('voiceschanged', pickJaVoice);
+} else {
+  voiceEnabled = false;
+}
+
+function updateVoiceToggleUI() {
+  voiceToggleBtn.textContent = voiceEnabled ? '🔊' : '🔇';
+  voiceToggleBtn.classList.toggle('muted', !voiceEnabled);
+  voiceToggleBtn.setAttribute('aria-label', voiceEnabled ? '音声読み上げオン(タップでオフ)' : '音声読み上げオフ(タップでオン)');
+}
+if (!window.speechSynthesis) {
+  voiceToggleBtn.disabled = true;
+  voiceToggleBtn.title = 'このブラウザは音声読み上げに対応していません';
+}
+updateVoiceToggleUI();
+
+voiceToggleBtn.addEventListener('click', () => {
+  voiceEnabled = !voiceEnabled;
+  localStorage.setItem(STORAGE_KEY_VOICE, voiceEnabled ? '1' : '0');
+  if (!voiceEnabled && window.speechSynthesis) speechSynthesis.cancel();
+  updateVoiceToggleUI();
+});
+
+function speakText(text) {
+  if (!voiceEnabled || !window.speechSynthesis || !text) return;
+  try {
+    speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'ja-JP';
+    if (jaVoice) utter.voice = jaVoice;
+    speechSynthesis.speak(utter);
+  } catch (err) {
+    console.error('speech synthesis error:', err);
+  }
+}
+
+// ---- 音声入力 (Web Speech API: SpeechRecognition) ----
+const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
+const micBtn = document.getElementById('micBtn');
+let recognition = null;
+let isListening = false;
+
+if (SpeechRecognitionImpl) {
+  recognition = new SpeechRecognitionImpl();
+  recognition.lang = 'ja-JP';
+  recognition.interimResults = false;
+  recognition.continuous = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.addEventListener('result', (e) => {
+    const transcript = e.results[0][0].transcript.trim();
+    if (transcript) {
+      inputEl.value = transcript;
+      if (formEl.requestSubmit) formEl.requestSubmit();
+      else formEl.dispatchEvent(new Event('submit', { cancelable: true }));
+    }
+  });
+  recognition.addEventListener('end', () => {
+    isListening = false;
+    micBtn.classList.remove('listening');
+  });
+  recognition.addEventListener('error', (e) => {
+    isListening = false;
+    micBtn.classList.remove('listening');
+    if (e.error !== 'no-speech' && e.error !== 'aborted') {
+      addMessage('system', `音声入力エラー: ${e.error}`);
+    }
+  });
+
+  micBtn.addEventListener('click', () => {
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    if (isListening) {
+      recognition.stop();
+      return;
+    }
+    try {
+      recognition.start();
+      isListening = true;
+      micBtn.classList.add('listening');
+    } catch (err) {
+      console.error('speech recognition start error:', err);
+    }
+  });
+} else {
+  micBtn.disabled = true;
+  micBtn.title = 'このブラウザは音声入力に対応していません';
+}
 </script>
 </body>
 </html>
