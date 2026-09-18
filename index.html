@@ -184,8 +184,8 @@ const STORAGE_KEY_CHAT = 'ai_partner_chat_log';
 const STORAGE_KEY_VOICE = 'ai_partner_voice_enabled';
 const STORAGE_KEY_VOICE_URI = 'ai_partner_voice_uri';
 
-// ★ Liteを外し、より賢い標準モデルに変更 ★
-const MODEL = 'gemini-3.5-flash';
+// API制限を回避するため、軽量かつ安定したLiteモデルへ戻します
+const MODEL = 'gemini-3.5-flash-lite';
 
 const APP_START_TRIGGER = '(system: ユーザーが今アプリを開きました。過去の記憶を踏まえて、あなたから自然に一言話しかけてください。この指示文自体には言及しないでください。)';
 
@@ -202,7 +202,7 @@ const SYSTEM_INSTRUCTION = `
 重要:
 - ユーザーの発言に自然に反応し、機械的な定型文を避ける
 - 過去の記憶が関連するときだけ自然に利用する
-- 【重要】わからないこと、最新情報、深い知識が求められる話題については、推測で答えず、必ずGoogle検索機能を利用して調べてから回答すること。
+- 知らないことを知っているふりをしない
 - 記憶にない個人情報を捏造しない
 - ユーザーの感情を決めつけない
 - 回答は通常、簡潔すぎず長すぎない
@@ -369,11 +369,10 @@ async function callGemini(userMessage) {
   const prompt = buildPrompt(userMessage, memories);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  // ★ 検索ツール(googleSearch) を追加 ★
+  // 検索ツール（tools）を削除し、軽量なペイロードに戻しました
   const body = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     systemInstruction: { role: 'system', parts: [{ text: SYSTEM_INSTRUCTION }] },
-    tools: [{ googleSearch: {} }],
     generationConfig: { responseMimeType: 'application/json' }
   };
 
@@ -474,7 +473,7 @@ formEl.addEventListener('submit', async (e) => {
   inputEl.value = '';
   sendBtn.disabled = true;
 
-  const thinkingEl = addMessage('system', '…考え中(検索している場合があります)…');
+  const thinkingEl = addMessage('system', '…考え中…');
 
   try {
     const reply = await callGemini(text);
@@ -621,7 +620,6 @@ let availableVoices = [];
 
 function populateVoices() {
   if (!window.speechSynthesis) return;
-  // 日本語の音声のみを抽出
   availableVoices = speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('ja'));
   voiceSelect.innerHTML = '';
   
@@ -635,7 +633,6 @@ function populateVoices() {
   availableVoices.forEach(v => {
     const opt = document.createElement('option');
     opt.value = v.voiceURI;
-    // 名前が長すぎる場合は省略
     opt.textContent = `${v.name} (${v.lang})`;
     voiceSelect.appendChild(opt);
   });
@@ -682,13 +679,12 @@ function speakText(text) {
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ja-JP';
     
-    // 選択された音声を適用
     const savedURI = localStorage.getItem(STORAGE_KEY_VOICE_URI);
     const selectedVoice = availableVoices.find(v => v.voiceURI === savedURI);
     if (selectedVoice) {
       utter.voice = selectedVoice;
     } else if (availableVoices.length > 0) {
-      utter.voice = availableVoices[0]; // デフォルト
+      utter.voice = availableVoices[0];
     }
     
     speechSynthesis.speak(utter);
