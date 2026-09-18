@@ -163,7 +163,7 @@
       <button class="btn-danger" id="clearKeyBtn">削除</button>
     </div>
     <p style="font-size:12px;color:var(--muted);margin-top:8px;">
-      ご自身でデプロイしたGASの「ウェブアプリURL」を入力してください。<br>APIキーはGAS側に安全に隠蔽されています。
+      ご自身でデプロイしたGASの「ウェブアプリURL」を入力してください。
     </p>
 
     <label for="voiceSelect">読み上げ音声の種類</label>
@@ -191,42 +191,34 @@ const MAX_MEMORIES = 100;
 const CORE_MEMORY_COUNT = 15;
 const PROMPT_MEMORY_LIMIT = 40;
 
+// ★ ここを大幅に改善！AIが「空気を読める」ように厳しく指示 ★
 const SYSTEM_INSTRUCTION = `
 あなたはユーザー専用のAIパートナーです。
-親しみやすく自然な日本語で会話してください。
-会話をただのQ&Aではなく、継続的な関係として扱ってください。
+親しみやすく自然な日本語でチャット会話をしてください。
 
-重要:
-- ユーザーの発言に自然に反応し、機械的な定型文を避ける
-- 過去の記憶が関連するときだけ自然に利用する
-- 知らないことを知っているふりをしない
-- 記憶にない個人情報を捏造しない
-- ユーザーの感情を決めつけない
-- 回答は通常、簡潔すぎず長すぎない
-- 日本語で回答する
-- ユーザーの発言が「(system: ...)」で始まる場合、それはアプリ起動を知らせる内部合図であり、ユーザー本人の発言ではない。その場合は過去の記憶を踏まえて自然に一言話しかけてください。合図の文面自体には触れないこと。
+【会話のルール（超重要）】
+1. 前後の文脈は読みつつも、同じ話題に固執しないでください。
+2. ユーザーが別の話題を振ったり、話題が一段落した場合は、過去の話題を引きずらずにすぐに新しい話題に合わせてください。
+3. 共有される「長期記憶」はあくまで背景知識です。今の話題に直接関係ない限り、無理に持ち出さないでください。
+4. ユーザーを質問攻めにしたり、AI側から同じ話を何度も蒸し返したりしないでください。
+5. 返答は長すぎず、チャットらしく簡潔に。
+6. ユーザーの発言が「(system: ...)」で始まる場合は内部合図です。合図の文面には触れず、自然に話しかけてください。
 
-記憶の管理について(重要):
-提示される「現在保存されている長期記憶」には、それぞれ[id]が付いています。
-新しい発言を踏まえて、以下のいずれかのアクションを memory_updates に含めてください。
+【記憶の管理について】
+提示される「長期記憶」には[id]が付いています。
+新しい発言を踏まえて、必要があれば memory_updates に以下のアクションを含めてください。不要なら空配列にしてください。
 
-- "add"    : 全く新しい情報を追加する(idは不要)
-- "update" : 既存の記憶が古くなった・間違っていた・より正確な情報に更新すべき場合、既存の[id]を指定して内容を書き換える
-- "delete" : 既存の記憶がもう有効ではなく、更新でもなく単純に不要になった場合、既存の[id]を指定して削除する
+- "add"    : 全く新しい情報を追加(id不要)
+- "update" : 既存情報(id指定)を更新
+- "delete" : 既存情報(id指定)を削除
 
-同じ内容・似た内容の記憶が既にある場合は、新規追加(add)ではなく、その記憶を更新(update)して1つにまとめてください。
-
-あなたの出力はJSONのみ:
+出力は以下のJSONのみ:
 {
   "reply": "ユーザーへの自然な返答",
   "memory_updates": [
-    { "action": "add", "text": "今後も役立つ、ユーザーについての具体的な記憶", "importance": 1 },
-    { "action": "update", "id": "既存記憶のid", "text": "更新後の内容", "importance": 3 },
-    { "action": "delete", "id": "既存記憶のid" }
+    { "action": "add", "text": "記憶内容", "importance": 1 }
   ]
 }
-
-importanceは1〜5。一時的な話題は記憶しないでください。記憶の変更が不要なら memory_updates は空配列にしてください。
 `;
 
 function generateId() {
@@ -343,22 +335,15 @@ function selectMemoriesForPrompt(userMessage, memories) {
   return [...core, ...relevant];
 }
 
-function formatRelativeDays(timestamp) {
-  const d = Math.floor(daysSince(timestamp));
-  if (d <= 0) return '今日';
-  if (d === 1) return '1日前';
-  return `${d}日前`;
-}
-
+// ★ プロンプトの渡し方もAIが誤解しにくいように変更 ★
 function buildPrompt(userMessage, allMemories) {
   const selected = selectMemoriesForPrompt(userMessage, allMemories);
   const memText = selected.map(m =>
-    `- [id:${m.id}] ${m.text} (重要度 ${effectiveImportance(m)}/5, 更新: ${formatRelativeDays(m.updated_at)})`
-  ).join('\n') || '（まだ長期記憶はありません）';
-  return `現在保存されている長期記憶:\n${memText}\n\n今回のユーザー発言:\n${userMessage}`;
+    `- [id:${m.id}] ${m.text}`
+  ).join('\n') || 'なし';
+  return `【あなたへの共有事項(長期記憶)】\n${memText}\n\n【ユーザーの最新の発言】\n${userMessage}`;
 }
 
-// ★ ここがGASと通信する関数（エラー超回避＆原因特定版） ★
 async function callGemini(userMessage) {
   const gasUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
   if (!gasUrl) throw new Error('NO_GAS_URL');
@@ -382,35 +367,26 @@ async function callGemini(userMessage) {
   const raw = await res.text();
   let parsed;
   try {
-    // 【改良】AIがどんな余計な文字をつけてきても、最初の { から 最後の } までを強引に抽出する
     const firstBrace = raw.indexOf('{');
     const lastBrace = raw.lastIndexOf('}');
-    
     if (firstBrace !== -1 && lastBrace !== -1) {
-      const extracted = raw.substring(firstBrace, lastBrace + 1);
-      parsed = JSON.parse(extracted);
+      parsed = JSON.parse(raw.substring(firstBrace, lastBrace + 1));
     } else {
-      // {} が見つからない場合は一応そのままパースに挑戦
       parsed = JSON.parse(raw);
     }
   } catch {
-    // 【改良】それでもパースに失敗した場合、受信した生データをエラー画面に出す
     console.error("【パース失敗】受信データ:", raw);
     const preview = raw.substring(0, 80).replace(/</g, '&lt;').replace(/>/g, '&gt;');
     throw new Error(`AIの応答がJSON形式ではありませんでした。\n【受信データの中身】\n${preview}...`);
   }
 
-  // GAS側で意図的なエラーが返された場合
-  if (parsed.error) {
-    throw new Error(parsed.error);
-  }
+  if (parsed.error) throw new Error(parsed.error);
 
   const reply = String(parsed.reply || '').trim();
   const actions = Array.isArray(parsed.memory_updates) ? parsed.memory_updates : [];
 
   if (!reply) throw new Error('有効な返答が空っぽでした。');
 
-  // 記憶の保存処理
   if (actions.length) {
     const merged = applyMemoryActions(memories, actions);
     pruneAndPersist(merged);
