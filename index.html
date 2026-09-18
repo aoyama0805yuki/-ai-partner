@@ -111,14 +111,12 @@
   .btn-danger { background: #4a2229; color: #ff9b9b; }
   .btn-secondary { background: #2a2e37; color: var(--text); }
   
-  /* メモリーとセッション用のCSS */
   .mem-item {
     background: #12141a; border-radius: 10px; padding: 8px 10px;
     margin-bottom: 6px; font-size: 13px; color: #cfd3da;
   }
   .mem-item span.imp { color: var(--muted); font-size: 11px; margin-left: 6px; }
   
-  /* セッション(チャット履歴)リスト用 */
   .session-item {
     background: #12141a; border-radius: 10px; padding: 12px;
     cursor: pointer; border: 1px solid #333947; position: relative;
@@ -154,7 +152,7 @@
   </form>
 </div>
 
-<!-- 履歴(スレッド一覧)モーダル -->
+<!-- 履歴モーダル -->
 <div class="modal-backdrop hidden" id="historyModal">
   <div class="modal" style="height: 80vh; display: flex; flex-direction: column;">
     <button class="close-x" id="closeHistory">✕</button>
@@ -172,17 +170,14 @@
   <div class="modal">
     <button class="close-x" id="closeSettings">✕</button>
     <h2>設定</h2>
-
     <label for="gasUrlInput">バックエンドAPI (GASのURL)</label>
     <input type="text" id="gasUrlInput" placeholder="https://script.google.com/macros/s/..." />
     <div class="row">
       <button class="btn-primary" id="saveKeyBtn">保存</button>
       <button class="btn-danger" id="clearKeyBtn">削除</button>
     </div>
-
     <label for="voiceSelect">読み上げ音声の種類</label>
     <select id="voiceSelect"></select>
-
     <label>保存されている長期記憶</label>
     <div id="memList"></div>
     <div class="row">
@@ -192,7 +187,6 @@
 </div>
 
 <script>
-// ★ セッション(スレッド)管理用のキーを新設 ★
 const STORAGE_KEY_GAS_URL = 'ai_partner_gas_url';
 const STORAGE_KEY_MEM = 'ai_partner_memory';
 const STORAGE_KEY_SESSIONS = 'ai_partner_sessions';
@@ -206,32 +200,30 @@ const MAX_MEMORIES = 100;
 const CORE_MEMORY_COUNT = 15;
 const PROMPT_MEMORY_LIMIT = 40;
 
+// ★ AIを「リード役」に性格変更 ★
 const SYSTEM_INSTRUCTION = `
-あなたはユーザー専用のAIパートナーです。
-親しみやすく自然な日本語でチャット会話をしてください。
+あなたはユーザーの親しいAIパートナーです。
+会話をただのQ&Aや相槌で終わらせず、親友とのやり取りのように盛り上げてください。
 
-【会話のルール】
-1. 前後の文脈は読みつつも、同じ話題に固執しないでください。
-2. ユーザーが別の話題を振ったり、話題が一段落した場合は、過去の話題を引きずらずにすぐに新しい話題に合わせてください。
-3. 共有される「長期記憶」はあくまで背景知識です。今の話題に直接関係ない限り、無理に持ち出さないでください。
-4. ユーザーを質問攻めにしたり、AI側から同じ話を何度も蒸し返したりしないでください。
-5. 返答は長すぎず、チャットらしく簡潔に。
-6. ユーザーの発言が「(system: ...)」で始まる場合は内部合図です。合図の文面には触れず、自然に話しかけてください。
+【会話のルール（超重要）】
+1. ユーザーは少し会話が苦手かもしれないので、あなたから積極的に話題を振ったり、答えやすい質問をして会話をリードしてください。相槌だけで終わらせるのは禁止です。
+2. 過去の話題（ゲーム、ガジェットなど）を自然に引き合いに出して話を広げると喜ばれます。
+3. 前後の文脈は読みつつも、話題が一段落したらスパッと新しい話題を提供してください。
+4. 返答は長すぎず、チャットらしく簡潔で親しみやすい口調にすること。
+5. ユーザーの発言が「(system: ...)」で始まる場合は内部合図です。合図には触れず、あなたから自然に話しかけてください。
 
 【記憶の管理について】
 提示される「長期記憶」には[id]が付いています。
-新しい発言を踏まえて、必要があれば memory_updates に以下のアクションを含めてください。不要なら空配列にしてください。
+新しい発言を踏まえて、必要があれば memory_updates にアクションを含めてください。不要なら空配列に。
+- "add": 全く新しい情報を追加(id不要)
+- "update": 既存情報(id指定)を更新
+- "delete": 既存情報(id指定)を削除
 
-- "add"    : 全く新しい情報を追加(id不要)
-- "update" : 既存情報(id指定)を更新
-- "delete" : 既存情報(id指定)を削除
-
-出力は以下のJSONのみ:
+【出力形式】
+必ず以下のJSON形式のみで出力すること。
 {
-  "reply": "ユーザーへの自然な返答",
-  "memory_updates": [
-    { "action": "add", "text": "記憶内容", "importance": 1 }
-  ]
+  "reply": "ユーザーへの自然な返答や質問",
+  "memory_updates": []
 }
 `;
 
@@ -240,7 +232,6 @@ function generateId() {
   return 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
-// ----------------- 記憶の管理 -----------------
 function migrateMemory(raw) {
   const now = Date.now();
   return raw.map(m => ({
@@ -344,16 +335,12 @@ function buildPrompt(userMessage, allMemories) {
   return `【あなたへの共有事項(長期記憶)】\n${memText}\n\n【ユーザーの最新の発言】\n${userMessage}`;
 }
 
-
-// ----------------- セッション(スレッド)の管理 -----------------
 let sessions = [];
 let currentSessionId = null;
 
 function loadSessions() {
   let loaded = [];
   try { loaded = JSON.parse(localStorage.getItem(STORAGE_KEY_SESSIONS) || '[]'); } catch(e) {}
-  
-  // 過去の古いバージョン(chat_log)が残っていれば移行する
   const oldLogStr = localStorage.getItem('ai_partner_chat_log');
   if (oldLogStr) {
     try {
@@ -362,7 +349,7 @@ function loadSessions() {
         loaded.push({ id: generateId(), title: "過去の会話", updated_at: Date.now(), messages: oldLog });
       }
     } catch(e) {}
-    localStorage.removeItem('ai_partner_chat_log'); // 移行したら消す
+    localStorage.removeItem('ai_partner_chat_log');
     saveSessions(loaded);
   }
   return loaded;
@@ -374,15 +361,13 @@ function getSession(id) {
   return sessions.find(s => s.id === id);
 }
 
-// ----------------- 通信処理 -----------------
+// ★ エラー回避の超強化 ★
 async function callGemini(userMessage) {
   const gasUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
   if (!gasUrl) throw new Error('NO_GAS_URL');
   
   const memories = loadMemory();
   const prompt = buildPrompt(userMessage, memories);
-  
-  // ★ ここが超重要！全履歴ではなく「現在のスレッドのログのみ」を送る ★
   const currentSession = getSession(currentSessionId);
   const recentLog = currentSession ? currentSession.messages.slice(-20) : [];
 
@@ -409,9 +394,16 @@ async function callGemini(userMessage) {
       parsed = JSON.parse(raw);
     }
   } catch {
-    console.error("【パース失敗】受信データ:", raw);
-    const preview = raw.substring(0, 80).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    throw new Error(`AIの応答がJSON形式ではありませんでした。\n【受信データ】\n${preview}...`);
+    // 【改良】AIがルールを忘れて普通のテキストで喋ってしまった場合、エラーにせずそのまま表示！
+    console.warn("【JSONパース失敗。生テキストを返答として表示します】", raw);
+    
+    // 不要なマークダウンを取り除く
+    let cleanText = raw.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+    
+    parsed = {
+      reply: cleanText,
+      memory_updates: []
+    };
   }
 
   if (parsed.error) throw new Error(parsed.error);
@@ -427,8 +419,6 @@ async function callGemini(userMessage) {
   return reply;
 }
 
-
-// ----------------- UI操作・チャット制御 -----------------
 const chatEl = document.getElementById('chat');
 const formEl = document.getElementById('chatForm');
 const inputEl = document.getElementById('msgInput');
@@ -443,7 +433,6 @@ function addMessage(role, text) {
   return div;
 }
 
-// ★ アプリを開いたら、必ず新規チャットとしてスタートする ★
 function startNewChat() {
   currentSessionId = generateId();
   sessions.push({
@@ -462,19 +451,15 @@ function startNewChat() {
   }
 }
 
-// 過去のチャットを画面に復元する
 function loadChatSession(id) {
   currentSessionId = id;
   const session = getSession(id);
   chatEl.innerHTML = '';
   session.messages.forEach(m => addMessage(m.role, m.text));
-  // 復元した時は挨拶を再送しない
 }
 
-// 初期ロード実行
 sessions = loadSessions();
 startNewChat();
-
 
 async function triggerOpeningMessage() {
   sendBtn.disabled = true;
@@ -483,8 +468,6 @@ async function triggerOpeningMessage() {
     const reply = await callGemini(APP_START_TRIGGER);
     thinkingEl.remove();
     addMessage('ai', reply);
-    
-    // セッションに保存
     const session = getSession(currentSessionId);
     session.messages.push({ role: 'ai', text: reply });
     session.updated_at = Date.now();
@@ -514,7 +497,6 @@ formEl.addEventListener('submit', async (e) => {
   const session = getSession(currentSessionId);
   session.messages.push({ role: 'user', text });
   
-  // 会話の最初のユーザー発言をタイトルにする
   if (session.title === "新しい会話") {
     session.title = text.slice(0, 15) + (text.length > 15 ? "..." : "");
   }
@@ -526,7 +508,6 @@ formEl.addEventListener('submit', async (e) => {
     const reply = await callGemini(text);
     thinkingEl.remove();
     addMessage('ai', reply);
-    
     session.messages.push({ role: 'ai', text: reply });
     session.updated_at = Date.now();
     saveSessions(sessions);
@@ -545,36 +526,28 @@ formEl.addEventListener('submit', async (e) => {
   }
 });
 
-// ----------------- 履歴(スレッド一覧)モーダル -----------------
 const historyModal = document.getElementById('historyModal');
 const sessionListEl = document.getElementById('sessionList');
 
 function renderSessionList() {
   sessionListEl.innerHTML = '';
   const sorted = [...sessions].sort((a, b) => b.updated_at - a.updated_at);
-  
   if (sorted.length === 0) {
     sessionListEl.innerHTML = '<p style="color:var(--muted);font-size:13px;">履歴はありません。</p>';
     return;
   }
-  
   sorted.forEach(s => {
     const div = document.createElement('div');
     div.className = 'session-item';
     if (s.id === currentSessionId) div.classList.add('active');
-    
     div.innerHTML = `
       <div class="session-title">${s.title}</div>
       <div class="session-meta">${formatRelativeDays(s.updated_at)} ・ ${s.messages.length}件のメッセージ</div>
     `;
-    
-    // タップでチャットを復元
     div.addEventListener('click', () => {
       loadChatSession(s.id);
       historyModal.classList.add('hidden');
     });
-    
-    // 削除ボタン
     const delBtn = document.createElement('button');
     delBtn.className = 'session-del';
     delBtn.textContent = '✕';
@@ -584,16 +557,13 @@ function renderSessionList() {
         sessions = sessions.filter(x => x.id !== s.id);
         saveSessions(sessions);
         renderSessionList();
-        // 現在開いているものを消したら新規チャットにリセット
         if (s.id === currentSessionId) startNewChat();
       }
     });
     div.appendChild(delBtn);
-    
     sessionListEl.appendChild(div);
   });
 }
-
 document.getElementById('openHistory').addEventListener('click', () => {
   renderSessionList();
   historyModal.classList.remove('hidden');
@@ -617,11 +587,9 @@ document.getElementById('clearHistoryBtn').addEventListener('click', () => {
   }
 });
 
-// ----------------- 設定モーダル -----------------
 const settingsModal = document.getElementById('settingsModal');
 const gasUrlInput = document.getElementById('gasUrlInput');
 const memList = document.getElementById('memList');
-
 function renderMemList() {
   const memories = loadMemory().sort((a, b) => effectiveImportance(b) - effectiveImportance(a));
   memList.innerHTML = '';
@@ -685,12 +653,10 @@ document.getElementById('clearMemBtn').addEventListener('click', () => {
   }
 });
 
-// ----------------- 音声関連 -----------------
 let voiceEnabled = localStorage.getItem(STORAGE_KEY_VOICE) !== '0';
 const voiceToggleBtn = document.getElementById('voiceToggle');
 const voiceSelect = document.getElementById('voiceSelect');
 let availableVoices = [];
-
 function populateVoices() {
   if (!window.speechSynthesis) return;
   availableVoices = speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('ja'));
@@ -756,7 +722,6 @@ function speakText(text) {
   }
 }
 
-// ----------------- 音声入力 -----------------
 const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
 const micBtn = document.getElementById('micBtn');
 let recognition = null;
