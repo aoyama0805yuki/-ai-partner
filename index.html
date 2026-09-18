@@ -110,12 +110,28 @@
   .btn-primary { background: var(--accent); color: white; }
   .btn-danger { background: #4a2229; color: #ff9b9b; }
   .btn-secondary { background: #2a2e37; color: var(--text); }
+  
+  /* メモリーとセッション用のCSS */
   .mem-item {
     background: #12141a; border-radius: 10px; padding: 8px 10px;
     margin-bottom: 6px; font-size: 13px; color: #cfd3da;
   }
   .mem-item span.imp { color: var(--muted); font-size: 11px; margin-left: 6px; }
-  #memList { margin-top: 10px; }
+  
+  /* セッション(チャット履歴)リスト用 */
+  .session-item {
+    background: #12141a; border-radius: 10px; padding: 12px;
+    cursor: pointer; border: 1px solid #333947; position: relative;
+  }
+  .session-item:hover { background: #1a1d24; }
+  .session-item.active { border-color: var(--accent); }
+  .session-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; padding-right: 30px; }
+  .session-meta { font-size: 11px; color: var(--muted); }
+  .session-del {
+    position: absolute; top: 10px; right: 10px;
+    background: none; border: none; color: #ff9b9b; cursor: pointer; font-size: 16px; padding: 4px;
+  }
+
   .close-x { position: absolute; top: 14px; right: 16px; }
   .modal { position: relative; }
 </style>
@@ -138,14 +154,15 @@
   </form>
 </div>
 
-<!-- 履歴モーダル -->
+<!-- 履歴(スレッド一覧)モーダル -->
 <div class="modal-backdrop hidden" id="historyModal">
   <div class="modal" style="height: 80vh; display: flex; flex-direction: column;">
     <button class="close-x" id="closeHistory">✕</button>
-    <h2>過去の会話履歴</h2>
-    <div id="historyList" style="flex: 1; overflow-y: auto; margin-top: 10px; display: flex; flex-direction: column; gap: 10px; padding-right: 4px;"></div>
+    <h2>過去の会話</h2>
+    <button id="newChatBtn" class="btn-primary" style="margin-bottom:10px;">＋ 新しい会話を始める</button>
+    <div id="sessionList" style="flex: 1; overflow-y: auto; margin-top: 5px; display: flex; flex-direction: column; gap: 8px; padding-right: 4px;"></div>
     <div class="row" style="margin-top:15px;">
-      <button class="btn-danger" id="clearHistoryBtn">履歴を全て削除</button>
+      <button class="btn-danger" id="clearHistoryBtn">全ての履歴を削除</button>
     </div>
   </div>
 </div>
@@ -162,9 +179,6 @@
       <button class="btn-primary" id="saveKeyBtn">保存</button>
       <button class="btn-danger" id="clearKeyBtn">削除</button>
     </div>
-    <p style="font-size:12px;color:var(--muted);margin-top:8px;">
-      ご自身でデプロイしたGASの「ウェブアプリURL」を入力してください。
-    </p>
 
     <label for="voiceSelect">読み上げ音声の種類</label>
     <select id="voiceSelect"></select>
@@ -178,9 +192,10 @@
 </div>
 
 <script>
+// ★ セッション(スレッド)管理用のキーを新設 ★
 const STORAGE_KEY_GAS_URL = 'ai_partner_gas_url';
 const STORAGE_KEY_MEM = 'ai_partner_memory';
-const STORAGE_KEY_CHAT = 'ai_partner_chat_log';
+const STORAGE_KEY_SESSIONS = 'ai_partner_sessions';
 const STORAGE_KEY_VOICE = 'ai_partner_voice_enabled';
 const STORAGE_KEY_VOICE_URI = 'ai_partner_voice_uri';
 
@@ -191,12 +206,11 @@ const MAX_MEMORIES = 100;
 const CORE_MEMORY_COUNT = 15;
 const PROMPT_MEMORY_LIMIT = 40;
 
-// ★ ここを大幅に改善！AIが「空気を読める」ように厳しく指示 ★
 const SYSTEM_INSTRUCTION = `
 あなたはユーザー専用のAIパートナーです。
 親しみやすく自然な日本語でチャット会話をしてください。
 
-【会話のルール（超重要）】
+【会話のルール】
 1. 前後の文脈は読みつつも、同じ話題に固執しないでください。
 2. ユーザーが別の話題を振ったり、話題が一段落した場合は、過去の話題を引きずらずにすぐに新しい話題に合わせてください。
 3. 共有される「長期記憶」はあくまで背景知識です。今の話題に直接関係ない限り、無理に持ち出さないでください。
@@ -226,6 +240,7 @@ function generateId() {
   return 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
+// ----------------- 記憶の管理 -----------------
 function migrateMemory(raw) {
   const now = Date.now();
   return raw.map(m => ({
@@ -236,21 +251,17 @@ function migrateMemory(raw) {
     updated_at: m.updated_at || m.created_at || now
   })).filter(m => m.text);
 }
-
 function loadMemory() {
   try { return migrateMemory(JSON.parse(localStorage.getItem(STORAGE_KEY_MEM) || '[]')); }
   catch { return []; }
 }
-
 function daysSince(timestamp) {
   return Math.max(0, (Date.now() - timestamp) / (1000 * 60 * 60 * 24));
 }
-
 function effectiveImportance(m) {
   const decay = Math.floor(daysSince(m.updated_at) / DECAY_DAYS);
   return Math.max(1, m.importance - decay);
 }
-
 function pruneAndPersist(memories) {
   const sorted = [...memories].sort((a, b) => {
     const diff = effectiveImportance(b) - effectiveImportance(a);
@@ -260,30 +271,24 @@ function pruneAndPersist(memories) {
   localStorage.setItem(STORAGE_KEY_MEM, JSON.stringify(trimmed));
   return trimmed;
 }
-
 function applyMemoryActions(existingMemories, actions) {
   const map = new Map(existingMemories.map(m => [m.id, m]));
   const now = Date.now();
-
   for (const act of actions) {
     if (!act || typeof act !== 'object') continue;
     const action = act.action || 'add';
-
     if (action === 'delete') {
       if (act.id && map.has(act.id)) map.delete(act.id);
       continue;
     }
-
     if (action === 'update' && act.id && map.has(act.id)) {
       const old = map.get(act.id);
       const text = String(act.text || '').trim() || old.text;
       const importance = act.importance != null
-        ? Math.max(1, Math.min(5, parseInt(act.importance, 10) || old.importance))
-        : old.importance;
+        ? Math.max(1, Math.min(5, parseInt(act.importance, 10) || old.importance)) : old.importance;
       map.set(act.id, { ...old, text, importance, updated_at: now });
       continue;
     }
-
     const text = String(act.text || '').trim();
     if (!text) continue;
     const id = generateId();
@@ -292,7 +297,6 @@ function applyMemoryActions(existingMemories, actions) {
   }
   return Array.from(map.values());
 }
-
 function bigrams(str) {
   const s = String(str || '').replace(/\s+/g, '');
   if (s.length < 2) return s ? [s] : [];
@@ -300,7 +304,6 @@ function bigrams(str) {
   for (let i = 0; i < s.length - 1; i++) arr.push(s.substring(i, i + 2));
   return arr;
 }
-
 function diceCoefficient(a, b) {
   const bgA = bigrams(a);
   const bgB = bigrams(b);
@@ -314,43 +317,74 @@ function diceCoefficient(a, b) {
   }
   return (2 * matches) / (bgA.length + bgB.length);
 }
-
 function selectMemoriesForPrompt(userMessage, memories) {
   const withScore = memories.map(m => ({ m, eff: effectiveImportance(m) }));
   withScore.sort((a, b) => b.eff - a.eff);
-
   const core = withScore.slice(0, CORE_MEMORY_COUNT).map(x => x.m);
   const coreIds = new Set(core.map(m => m.id));
-
   const rest = withScore.filter(x => !coreIds.has(x.m.id));
   const relevanceScored = rest.map(x => ({
     m: x.m,
     score: diceCoefficient(userMessage, x.m.text) * 5 + x.eff
   }));
   relevanceScored.sort((a, b) => b.score - a.score);
-
   const remainingSlots = Math.max(0, PROMPT_MEMORY_LIMIT - core.length);
   const relevant = relevanceScored.slice(0, remainingSlots).map(x => x.m);
-
   return [...core, ...relevant];
 }
-
-// ★ プロンプトの渡し方もAIが誤解しにくいように変更 ★
+function formatRelativeDays(timestamp) {
+  const d = Math.floor(daysSince(timestamp));
+  if (d <= 0) return '今日';
+  if (d === 1) return '1日前';
+  return `${d}日前`;
+}
 function buildPrompt(userMessage, allMemories) {
   const selected = selectMemoriesForPrompt(userMessage, allMemories);
-  const memText = selected.map(m =>
-    `- [id:${m.id}] ${m.text}`
-  ).join('\n') || 'なし';
+  const memText = selected.map(m => `- [id:${m.id}] ${m.text}`).join('\n') || 'なし';
   return `【あなたへの共有事項(長期記憶)】\n${memText}\n\n【ユーザーの最新の発言】\n${userMessage}`;
 }
 
+
+// ----------------- セッション(スレッド)の管理 -----------------
+let sessions = [];
+let currentSessionId = null;
+
+function loadSessions() {
+  let loaded = [];
+  try { loaded = JSON.parse(localStorage.getItem(STORAGE_KEY_SESSIONS) || '[]'); } catch(e) {}
+  
+  // 過去の古いバージョン(chat_log)が残っていれば移行する
+  const oldLogStr = localStorage.getItem('ai_partner_chat_log');
+  if (oldLogStr) {
+    try {
+      const oldLog = JSON.parse(oldLogStr);
+      if (oldLog.length > 0) {
+        loaded.push({ id: generateId(), title: "過去の会話", updated_at: Date.now(), messages: oldLog });
+      }
+    } catch(e) {}
+    localStorage.removeItem('ai_partner_chat_log'); // 移行したら消す
+    saveSessions(loaded);
+  }
+  return loaded;
+}
+function saveSessions(arr) {
+  localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(arr));
+}
+function getSession(id) {
+  return sessions.find(s => s.id === id);
+}
+
+// ----------------- 通信処理 -----------------
 async function callGemini(userMessage) {
   const gasUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
   if (!gasUrl) throw new Error('NO_GAS_URL');
   
   const memories = loadMemory();
   const prompt = buildPrompt(userMessage, memories);
-  const recentLog = chatLog.slice(-20);
+  
+  // ★ ここが超重要！全履歴ではなく「現在のスレッドのログのみ」を送る ★
+  const currentSession = getSession(currentSessionId);
+  const recentLog = currentSession ? currentSession.messages.slice(-20) : [];
 
   const body = {
     prompt: prompt,
@@ -377,25 +411,24 @@ async function callGemini(userMessage) {
   } catch {
     console.error("【パース失敗】受信データ:", raw);
     const preview = raw.substring(0, 80).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    throw new Error(`AIの応答がJSON形式ではありませんでした。\n【受信データの中身】\n${preview}...`);
+    throw new Error(`AIの応答がJSON形式ではありませんでした。\n【受信データ】\n${preview}...`);
   }
 
   if (parsed.error) throw new Error(parsed.error);
 
   const reply = String(parsed.reply || '').trim();
   const actions = Array.isArray(parsed.memory_updates) ? parsed.memory_updates : [];
-
   if (!reply) throw new Error('有効な返答が空っぽでした。');
 
   if (actions.length) {
     const merged = applyMemoryActions(memories, actions);
     pruneAndPersist(merged);
   }
-
   return reply;
 }
 
-// ---- UI wiring ----
+
+// ----------------- UI操作・チャット制御 -----------------
 const chatEl = document.getElementById('chat');
 const formEl = document.getElementById('chatForm');
 const inputEl = document.getElementById('msgInput');
@@ -410,21 +443,38 @@ function addMessage(role, text) {
   return div;
 }
 
-function loadChatLog() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY_CHAT) || '[]'); }
-  catch { return []; }
-}
-function saveChatLog(log) {
-  localStorage.setItem(STORAGE_KEY_CHAT, JSON.stringify(log.slice(-200)));
+// ★ アプリを開いたら、必ず新規チャットとしてスタートする ★
+function startNewChat() {
+  currentSessionId = generateId();
+  sessions.push({
+    id: currentSessionId,
+    title: "新しい会話",
+    updated_at: Date.now(),
+    messages: []
+  });
+  saveSessions(sessions);
+  chatEl.innerHTML = '';
+  
+  if (localStorage.getItem(STORAGE_KEY_GAS_URL)) {
+    triggerOpeningMessage();
+  } else {
+    addMessage('system', '初期設定が必要です。右上の⚙️から「GASのWebアプリURL」を設定してください。');
+  }
 }
 
-let chatLog = loadChatLog();
-
-if (localStorage.getItem(STORAGE_KEY_GAS_URL)) {
-  triggerOpeningMessage();
-} else {
-  addMessage('system', '初期設定が必要です。右上の⚙️から「GASのWebアプリURL」を設定してください。');
+// 過去のチャットを画面に復元する
+function loadChatSession(id) {
+  currentSessionId = id;
+  const session = getSession(id);
+  chatEl.innerHTML = '';
+  session.messages.forEach(m => addMessage(m.role, m.text));
+  // 復元した時は挨拶を再送しない
 }
+
+// 初期ロード実行
+sessions = loadSessions();
+startNewChat();
+
 
 async function triggerOpeningMessage() {
   sendBtn.disabled = true;
@@ -433,8 +483,12 @@ async function triggerOpeningMessage() {
     const reply = await callGemini(APP_START_TRIGGER);
     thinkingEl.remove();
     addMessage('ai', reply);
-    chatLog.push({ role: 'ai', text: reply });
-    saveChatLog(chatLog);
+    
+    // セッションに保存
+    const session = getSession(currentSessionId);
+    session.messages.push({ role: 'ai', text: reply });
+    session.updated_at = Date.now();
+    saveSessions(sessions);
     speakText(reply);
   } catch (err) {
     thinkingEl.remove();
@@ -454,19 +508,28 @@ formEl.addEventListener('submit', async (e) => {
   if (!text) return;
 
   addMessage('user', text);
-  chatLog.push({ role: 'user', text });
-  saveChatLog(chatLog);
   inputEl.value = '';
   sendBtn.disabled = true;
 
-  const thinkingEl = addMessage('system', '…考え中…');
+  const session = getSession(currentSessionId);
+  session.messages.push({ role: 'user', text });
+  
+  // 会話の最初のユーザー発言をタイトルにする
+  if (session.title === "新しい会話") {
+    session.title = text.slice(0, 15) + (text.length > 15 ? "..." : "");
+  }
+  session.updated_at = Date.now();
+  saveSessions(sessions);
 
+  const thinkingEl = addMessage('system', '…考え中…');
   try {
     const reply = await callGemini(text);
     thinkingEl.remove();
     addMessage('ai', reply);
-    chatLog.push({ role: 'ai', text: reply });
-    saveChatLog(chatLog);
+    
+    session.messages.push({ role: 'ai', text: reply });
+    session.updated_at = Date.now();
+    saveSessions(sessions);
     speakText(reply);
   } catch (err) {
     thinkingEl.remove();
@@ -482,28 +545,57 @@ formEl.addEventListener('submit', async (e) => {
   }
 });
 
-// ---- 履歴モーダル ----
+// ----------------- 履歴(スレッド一覧)モーダル -----------------
 const historyModal = document.getElementById('historyModal');
-const historyList = document.getElementById('historyList');
+const sessionListEl = document.getElementById('sessionList');
 
-function renderHistoryList() {
-  historyList.innerHTML = '';
-  const log = loadChatLog();
-  if (log.length === 0) {
-    historyList.innerHTML = '<p style="color:var(--muted);font-size:13px;">履歴はありません。</p>';
+function renderSessionList() {
+  sessionListEl.innerHTML = '';
+  const sorted = [...sessions].sort((a, b) => b.updated_at - a.updated_at);
+  
+  if (sorted.length === 0) {
+    sessionListEl.innerHTML = '<p style="color:var(--muted);font-size:13px;">履歴はありません。</p>';
     return;
   }
-  log.forEach(m => {
+  
+  sorted.forEach(s => {
     const div = document.createElement('div');
-    div.className = `msg ${m.role}`;
-    div.textContent = m.text;
-    historyList.appendChild(div);
+    div.className = 'session-item';
+    if (s.id === currentSessionId) div.classList.add('active');
+    
+    div.innerHTML = `
+      <div class="session-title">${s.title}</div>
+      <div class="session-meta">${formatRelativeDays(s.updated_at)} ・ ${s.messages.length}件のメッセージ</div>
+    `;
+    
+    // タップでチャットを復元
+    div.addEventListener('click', () => {
+      loadChatSession(s.id);
+      historyModal.classList.add('hidden');
+    });
+    
+    // 削除ボタン
+    const delBtn = document.createElement('button');
+    delBtn.className = 'session-del';
+    delBtn.textContent = '✕';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm(`チャット「${s.title}」を削除しますか？`)) {
+        sessions = sessions.filter(x => x.id !== s.id);
+        saveSessions(sessions);
+        renderSessionList();
+        // 現在開いているものを消したら新規チャットにリセット
+        if (s.id === currentSessionId) startNewChat();
+      }
+    });
+    div.appendChild(delBtn);
+    
+    sessionListEl.appendChild(div);
   });
-  historyList.scrollTop = historyList.scrollHeight;
 }
 
 document.getElementById('openHistory').addEventListener('click', () => {
-  renderHistoryList();
+  renderSessionList();
   historyModal.classList.remove('hidden');
 });
 document.getElementById('closeHistory').addEventListener('click', () => {
@@ -512,15 +604,20 @@ document.getElementById('closeHistory').addEventListener('click', () => {
 historyModal.addEventListener('click', (e) => {
   if (e.target === historyModal) historyModal.classList.add('hidden');
 });
+document.getElementById('newChatBtn').addEventListener('click', () => {
+  startNewChat();
+  historyModal.classList.add('hidden');
+});
 document.getElementById('clearHistoryBtn').addEventListener('click', () => {
-  if (confirm('会話履歴を全て削除しますか？\n(現在のチャット画面には影響しません)')) {
-    localStorage.removeItem(STORAGE_KEY_CHAT);
-    chatLog = [];
-    renderHistoryList();
+  if (confirm('全ての会話履歴を削除しますか？\n(記憶には影響しません)')) {
+    sessions = [];
+    saveSessions(sessions);
+    renderSessionList();
+    startNewChat();
   }
 });
 
-// ---- 設定モーダル ----
+// ----------------- 設定モーダル -----------------
 const settingsModal = document.getElementById('settingsModal');
 const gasUrlInput = document.getElementById('gasUrlInput');
 const memList = document.getElementById('memList');
@@ -535,18 +632,15 @@ function renderMemList() {
   memories.forEach(m => {
     const div = document.createElement('div');
     div.className = 'mem-item';
-
     const textDiv = document.createElement('div');
     textDiv.textContent = m.text;
     div.appendChild(textDiv);
-
     const eff = effectiveImportance(m);
     const decayNote = eff < m.importance ? `(老朽化により実効${eff})` : '';
     const span = document.createElement('span');
     span.className = 'imp';
     span.textContent = `重要度 ${m.importance}/5 ${decayNote} ・更新: ${formatRelativeDays(m.updated_at)}`;
     div.appendChild(span);
-
     const delBtn = document.createElement('button');
     delBtn.textContent = '削除';
     delBtn.style.cssText = 'display:block;margin-top:6px;background:#3a2229;color:#ff9b9b;border:none;border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer;';
@@ -556,41 +650,34 @@ function renderMemList() {
       renderMemList();
     });
     div.appendChild(delBtn);
-
     memList.appendChild(div);
   });
 }
-
 function openSettingsModal() {
-  const existing = localStorage.getItem(STORAGE_KEY_GAS_URL) || '';
-  gasUrlInput.value = existing;
+  gasUrlInput.value = localStorage.getItem(STORAGE_KEY_GAS_URL) || '';
   renderMemList();
   settingsModal.classList.remove('hidden');
 }
 function closeSettingsModal() {
   settingsModal.classList.add('hidden');
 }
-
 document.getElementById('openSettings').addEventListener('click', openSettingsModal);
 document.getElementById('closeSettings').addEventListener('click', closeSettingsModal);
 settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) closeSettingsModal();
 });
-
 document.getElementById('saveKeyBtn').addEventListener('click', () => {
   const url = gasUrlInput.value.trim();
   if (!url) { alert('GASのURLを入力してください。'); return; }
   localStorage.setItem(STORAGE_KEY_GAS_URL, url);
   closeSettingsModal();
 });
-
 document.getElementById('clearKeyBtn').addEventListener('click', () => {
   if (confirm('保存済みのGASのURLを削除しますか？')) {
     localStorage.removeItem(STORAGE_KEY_GAS_URL);
     gasUrlInput.value = '';
   }
 });
-
 document.getElementById('clearMemBtn').addEventListener('click', () => {
   if (confirm('全ての長期記憶を削除しますか？この操作は元に戻せません。')) {
     localStorage.removeItem(STORAGE_KEY_MEM);
@@ -598,7 +685,7 @@ document.getElementById('clearMemBtn').addEventListener('click', () => {
   }
 });
 
-// ---- 音声読み上げ & 声の選択機能 ----
+// ----------------- 音声関連 -----------------
 let voiceEnabled = localStorage.getItem(STORAGE_KEY_VOICE) !== '0';
 const voiceToggleBtn = document.getElementById('voiceToggle');
 const voiceSelect = document.getElementById('voiceSelect');
@@ -608,38 +695,32 @@ function populateVoices() {
   if (!window.speechSynthesis) return;
   availableVoices = speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('ja'));
   voiceSelect.innerHTML = '';
-  
   if (availableVoices.length === 0) {
     const opt = document.createElement('option');
     opt.textContent = '利用可能な日本語音声がありません';
     voiceSelect.appendChild(opt);
     return;
   }
-
   availableVoices.forEach(v => {
     const opt = document.createElement('option');
     opt.value = v.voiceURI;
     opt.textContent = `${v.name} (${v.lang})`;
     voiceSelect.appendChild(opt);
   });
-
   const savedURI = localStorage.getItem(STORAGE_KEY_VOICE_URI);
   if (savedURI && availableVoices.find(v => v.voiceURI === savedURI)) {
     voiceSelect.value = savedURI;
   }
 }
-
 if (window.speechSynthesis) {
   populateVoices();
   speechSynthesis.addEventListener('voiceschanged', populateVoices);
 } else {
   voiceEnabled = false;
 }
-
 voiceSelect.addEventListener('change', () => {
   localStorage.setItem(STORAGE_KEY_VOICE_URI, voiceSelect.value);
 });
-
 function updateVoiceToggleUI() {
   voiceToggleBtn.textContent = voiceEnabled ? '🔊' : '🔇';
   voiceToggleBtn.classList.toggle('muted', !voiceEnabled);
@@ -647,24 +728,21 @@ function updateVoiceToggleUI() {
 }
 if (!window.speechSynthesis) {
   voiceToggleBtn.disabled = true;
-  voiceToggleBtn.title = 'このブラウザは音声読み上げに対応していません';
+  voiceToggleBtn.title = 'ブラウザが音声読み上げに未対応です';
 }
 updateVoiceToggleUI();
-
 voiceToggleBtn.addEventListener('click', () => {
   voiceEnabled = !voiceEnabled;
   localStorage.setItem(STORAGE_KEY_VOICE, voiceEnabled ? '1' : '0');
   if (!voiceEnabled && window.speechSynthesis) speechSynthesis.cancel();
   updateVoiceToggleUI();
 });
-
 function speakText(text) {
   if (!voiceEnabled || !window.speechSynthesis || !text) return;
   try {
     speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ja-JP';
-    
     const savedURI = localStorage.getItem(STORAGE_KEY_VOICE_URI);
     const selectedVoice = availableVoices.find(v => v.voiceURI === savedURI);
     if (selectedVoice) {
@@ -672,26 +750,23 @@ function speakText(text) {
     } else if (availableVoices.length > 0) {
       utter.voice = availableVoices[0];
     }
-    
     speechSynthesis.speak(utter);
   } catch (err) {
-    console.error('speech synthesis error:', err);
+    console.error('speech error:', err);
   }
 }
 
-// ---- 音声入力 ----
+// ----------------- 音声入力 -----------------
 const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
 const micBtn = document.getElementById('micBtn');
 let recognition = null;
 let isListening = false;
-
 if (SpeechRecognitionImpl) {
   recognition = new SpeechRecognitionImpl();
   recognition.lang = 'ja-JP';
   recognition.interimResults = false;
   recognition.continuous = false;
   recognition.maxAlternatives = 1;
-
   recognition.addEventListener('result', (e) => {
     const transcript = e.results[0][0].transcript.trim();
     if (transcript) {
@@ -711,7 +786,6 @@ if (SpeechRecognitionImpl) {
       addMessage('system', `音声入力エラー: ${e.error}`);
     }
   });
-
   micBtn.addEventListener('click', () => {
     if (window.speechSynthesis) speechSynthesis.cancel();
     if (isListening) {
@@ -723,12 +797,11 @@ if (SpeechRecognitionImpl) {
       isListening = true;
       micBtn.classList.add('listening');
     } catch (err) {
-      console.error('speech recognition start error:', err);
+      console.error('speech recog error:', err);
     }
   });
 } else {
   micBtn.disabled = true;
-  micBtn.title = 'このブラウザは音声入力に対応していません';
 }
 </script>
 </body>
