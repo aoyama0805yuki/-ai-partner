@@ -97,7 +97,7 @@
   }
   .modal h2 { margin-top: 0; font-size: 17px; }
   .modal label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
-  .modal input[type="password"], .modal input[type="text"], .modal select {
+  .modal input[type="text"], .modal select {
     width: 100%; padding: 10px 12px; border-radius: 10px;
     border: 1px solid #333947; background: #12141a; color: var(--text);
     font-size: 14px;
@@ -156,14 +156,15 @@
     <button class="close-x" id="closeSettings">✕</button>
     <h2>設定</h2>
 
-    <label for="apiKeyInput">Gemini APIキー</label>
-    <input type="password" id="apiKeyInput" placeholder="AIza..." />
+    <!-- ★ ここがGeminiのキーから、自作GASのURL入力に変わりました ★ -->
+    <label for="gasUrlInput">バックエンドAPI (GASのURL)</label>
+    <input type="text" id="gasUrlInput" placeholder="https://script.google.com/macros/s/..." />
     <div class="row">
       <button class="btn-primary" id="saveKeyBtn">保存</button>
-      <button class="btn-danger" id="clearKeyBtn">キー削除</button>
+      <button class="btn-danger" id="clearKeyBtn">削除</button>
     </div>
     <p style="font-size:12px;color:var(--muted);margin-top:8px;">
-      キーはこの端末のブラウザ内(localStorage)にのみ保存されます。他の端末とは共有されません。
+      ご自身でデプロイしたGASの「ウェブアプリURL」を入力してください。<br>APIキーはGAS側に安全に隠蔽されています。
     </p>
 
     <label for="voiceSelect">読み上げ音声の種類</label>
@@ -178,14 +179,12 @@
 </div>
 
 <script>
-const STORAGE_KEY_API = 'ai_partner_gemini_api_key';
+// ★ 保存キーの名前もGAS用へ変更 ★
+const STORAGE_KEY_GAS_URL = 'ai_partner_gas_url';
 const STORAGE_KEY_MEM = 'ai_partner_memory';
 const STORAGE_KEY_CHAT = 'ai_partner_chat_log';
 const STORAGE_KEY_VOICE = 'ai_partner_voice_enabled';
 const STORAGE_KEY_VOICE_URI = 'ai_partner_voice_uri';
-
-// API制限を回避するため、軽量かつ安定したLiteモデルへ戻します
-const MODEL = 'gemini-3.5-flash-lite';
 
 const APP_START_TRIGGER = '(system: ユーザーが今アプリを開きました。過去の記憶を踏まえて、あなたから自然に一言話しかけてください。この指示文自体には言及しないでください。)';
 
@@ -361,39 +360,39 @@ function buildPrompt(userMessage, allMemories) {
   return `現在保存されている長期記憶:\n${memText}\n\n今回のユーザー発言:\n${userMessage}`;
 }
 
+// ★ ここがGASと通信する関数に進化しました ★
 async function callGemini(userMessage) {
-  const apiKey = localStorage.getItem(STORAGE_KEY_API);
-  if (!apiKey) throw new Error('NO_API_KEY');
+  const gasUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
+  if (!gasUrl) throw new Error('NO_GAS_URL');
   
   const memories = loadMemory();
   const prompt = buildPrompt(userMessage, memories);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  // 検索ツール（tools）を削除し、軽量なペイロードに戻しました
   const body = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    systemInstruction: { role: 'system', parts: [{ text: SYSTEM_INSTRUCTION }] },
-    generationConfig: { responseMimeType: 'application/json' }
+    prompt: prompt,
+    systemInstruction: SYSTEM_INSTRUCTION
   };
 
-  const res = await fetch(url, {
+  // CORSエラーを避けるため、Content-Typeは 'text/plain' で送信します
+  const res = await fetch(gasUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify(body)
   });
-  const data = await res.json();
 
-  if (!res.ok) {
-    const msg = data?.error?.message || `HTTPエラー ${res.status}`;
-    throw new Error(msg);
-  }
-
-  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const raw = await res.text();
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    // Geminiがたまに付けるマークダウン(```json)を除去してパース
+    const cleaned = raw.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+    parsed = JSON.parse(cleaned);
   } catch {
-    throw new Error('モデルの応答をJSONとして解析できませんでした。');
+    throw new Error('モデルの応答を解析できませんでした。');
+  }
+
+  // GAS側でエラーが起きた場合
+  if (parsed.error) {
+    throw new Error(parsed.error);
   }
 
   const reply = String(parsed.reply || '').trim();
@@ -434,10 +433,10 @@ function saveChatLog(log) {
 
 let chatLog = loadChatLog();
 
-if (localStorage.getItem(STORAGE_KEY_API)) {
+if (localStorage.getItem(STORAGE_KEY_GAS_URL)) {
   triggerOpeningMessage();
 } else {
-  addMessage('system', 'メッセージを送るとAIパートナーと会話が始まります。右上の⚙️からAPIキーを設定してください。');
+  addMessage('system', '初期設定が必要です。右上の⚙️から「GASのWebアプリURL」を設定してください。');
 }
 
 async function triggerOpeningMessage() {
@@ -452,8 +451,8 @@ async function triggerOpeningMessage() {
     speakText(reply);
   } catch (err) {
     thinkingEl.remove();
-    if (err.message === 'NO_API_KEY') {
-      addMessage('system', 'APIキーが未設定です。右上の⚙️から設定してください。');
+    if (err.message === 'NO_GAS_URL') {
+      addMessage('system', 'GASのURLが未設定です。右上の⚙️から設定してください。');
     } else {
       addMessage('system', `エラー: ${err.message}`);
     }
@@ -484,8 +483,8 @@ formEl.addEventListener('submit', async (e) => {
     speakText(reply);
   } catch (err) {
     thinkingEl.remove();
-    if (err.message === 'NO_API_KEY') {
-      addMessage('system', 'APIキーが未設定です。右上の⚙️から設定してください。');
+    if (err.message === 'NO_GAS_URL') {
+      addMessage('system', 'GASのURLが未設定です。右上の⚙️から設定してください。');
       openSettingsModal();
     } else {
       addMessage('system', `エラー: ${err.message}`);
@@ -536,7 +535,7 @@ document.getElementById('clearHistoryBtn').addEventListener('click', () => {
 
 // ---- 設定モーダル ----
 const settingsModal = document.getElementById('settingsModal');
-const apiKeyInput = document.getElementById('apiKeyInput');
+const gasUrlInput = document.getElementById('gasUrlInput');
 const memList = document.getElementById('memList');
 
 function renderMemList() {
@@ -576,8 +575,8 @@ function renderMemList() {
 }
 
 function openSettingsModal() {
-  const existing = localStorage.getItem(STORAGE_KEY_API) || '';
-  apiKeyInput.value = existing;
+  const existing = localStorage.getItem(STORAGE_KEY_GAS_URL) || '';
+  gasUrlInput.value = existing;
   renderMemList();
   settingsModal.classList.remove('hidden');
 }
@@ -592,16 +591,16 @@ settingsModal.addEventListener('click', (e) => {
 });
 
 document.getElementById('saveKeyBtn').addEventListener('click', () => {
-  const key = apiKeyInput.value.trim();
-  if (!key) { alert('キーを入力してください。'); return; }
-  localStorage.setItem(STORAGE_KEY_API, key);
+  const url = gasUrlInput.value.trim();
+  if (!url) { alert('GASのURLを入力してください。'); return; }
+  localStorage.setItem(STORAGE_KEY_GAS_URL, url);
   closeSettingsModal();
 });
 
 document.getElementById('clearKeyBtn').addEventListener('click', () => {
-  if (confirm('保存済みのAPIキーを削除しますか？')) {
-    localStorage.removeItem(STORAGE_KEY_API);
-    apiKeyInput.value = '';
+  if (confirm('保存済みのGASのURLを削除しますか？')) {
+    localStorage.removeItem(STORAGE_KEY_GAS_URL);
+    gasUrlInput.value = '';
   }
 });
 
@@ -747,4 +746,3 @@ if (SpeechRecognitionImpl) {
 </script>
 </body>
 </html>
-
