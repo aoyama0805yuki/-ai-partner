@@ -156,7 +156,6 @@
     <button class="close-x" id="closeSettings">✕</button>
     <h2>設定</h2>
 
-    <!-- ★ ここがGeminiのキーから、自作GASのURL入力に変わりました ★ -->
     <label for="gasUrlInput">バックエンドAPI (GASのURL)</label>
     <input type="text" id="gasUrlInput" placeholder="https://script.google.com/macros/s/..." />
     <div class="row">
@@ -179,7 +178,6 @@
 </div>
 
 <script>
-// ★ 保存キーの名前もGAS用へ変更 ★
 const STORAGE_KEY_GAS_URL = 'ai_partner_gas_url';
 const STORAGE_KEY_MEM = 'ai_partner_memory';
 const STORAGE_KEY_CHAT = 'ai_partner_chat_log';
@@ -360,7 +358,7 @@ function buildPrompt(userMessage, allMemories) {
   return `現在保存されている長期記憶:\n${memText}\n\n今回のユーザー発言:\n${userMessage}`;
 }
 
-// ★ ここがGASと通信する関数に進化しました ★
+// ★ ここがGASと通信する関数（履歴送信対応版） ★
 async function callGemini(userMessage) {
   const gasUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
   if (!gasUrl) throw new Error('NO_GAS_URL');
@@ -368,12 +366,15 @@ async function callGemini(userMessage) {
   const memories = loadMemory();
   const prompt = buildPrompt(userMessage, memories);
 
+  // ★ 直近20件の会話履歴を取得してバックエンド(GAS)に送る ★
+  const recentLog = chatLog.slice(-20);
+
   const body = {
     prompt: prompt,
+    history: recentLog,
     systemInstruction: SYSTEM_INSTRUCTION
   };
 
-  // CORSエラーを避けるため、Content-Typeは 'text/plain' で送信します
   const res = await fetch(gasUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
@@ -383,14 +384,12 @@ async function callGemini(userMessage) {
   const raw = await res.text();
   let parsed;
   try {
-    // Geminiがたまに付けるマークダウン(```json)を除去してパース
     const cleaned = raw.replace(/^```json\n?/, '').replace(/\n?```$/, '');
     parsed = JSON.parse(cleaned);
   } catch {
     throw new Error('モデルの応答を解析できませんでした。');
   }
 
-  // GAS側でエラーが起きた場合
   if (parsed.error) {
     throw new Error(parsed.error);
   }
