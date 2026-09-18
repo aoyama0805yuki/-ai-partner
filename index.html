@@ -1,80 +1,747 @@
-function doPost(e) {
-  let req = {};
-  try {
-    req = JSON.parse(e.postData.contents);
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({ error: "無効なリクエストです" }))
-                         .setMimeType(ContentService.MimeType.JSON);
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>AIパートナー</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --bubble-user: #2f6fed;
+    --bubble-ai: #262a33;
+    --text: #eaeaea;
+    --muted: #9aa0aa;
+    --accent: #2f6fed;
   }
-
-  const prompt = req.prompt; 
-  const history = req.history || []; 
-  const sysInst = req.systemInstruction;
-  
-  const GEMINI_API_KEY = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  
-  if (!GEMINI_API_KEY) {
-    return ContentService.createTextOutput(JSON.stringify({ error: "GAS側にAPIキーが設定されていません。" }))
-                         .setMimeType(ContentService.MimeType.JSON);
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
   }
+  #app {
+    display: flex; flex-direction: column;
+    height: 100dvh; max-width: 640px; margin: 0 auto;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; background: var(--panel);
+    border-bottom: 1px solid #2a2e37;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header button {
+    background: none; border: none; color: var(--text);
+    font-size: 20px; cursor: pointer; padding: 4px 8px;
+  }
+  #chat {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .msg {
+    max-width: 80%; padding: 10px 14px; border-radius: 16px;
+    line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    font-size: 15px;
+  }
+  .msg.user {
+    align-self: flex-end; background: var(--bubble-user); color: white;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.ai {
+    align-self: flex-start; background: var(--bubble-ai);
+    border-bottom-left-radius: 4px;
+  }
+  .msg.system {
+    align-self: center; color: var(--muted); font-size: 12px;
+    background: none; padding: 4px;
+  }
+  #chatForm {
+    display: flex; gap: 8px; padding: 10px;
+    background: var(--panel); border-top: 1px solid #2a2e37;
+  }
+  #msgInput {
+    flex: 1; padding: 12px 14px; border-radius: 20px;
+    border: 1px solid #333947; background: #12141a; color: var(--text);
+    font-size: 15px; outline: none;
+  }
+  #chatForm button {
+    background: var(--accent); color: white; border: none;
+    border-radius: 20px; padding: 0 18px; font-size: 15px; cursor: pointer;
+  }
+  #chatForm button:disabled { opacity: 0.5; }
+  #micBtn {
+    background: #2a2e37; color: var(--text); border: none;
+    border-radius: 50%; width: 40px; height: 40px; min-width: 40px;
+    font-size: 16px; cursor: pointer; flex-shrink: 0;
+  }
+  #micBtn.listening {
+    background: #b3392f; color: white;
+    animation: mic-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes mic-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(179,57,47,0.6); }
+    70%  { box-shadow: 0 0 0 10px rgba(179,57,47,0); }
+    100% { box-shadow: 0 0 0 0 rgba(179,57,47,0); }
+  }
+  #voiceToggle.muted { opacity: 0.5; }
 
-  // ★ 安定・無料枠重視のLiteモデルを使用 ★
-  const MODEL = 'gemini-3.5-flash-lite';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: flex-end; justify-content: center; z-index: 10;
+  }
+  .modal-backdrop.hidden { display: none; }
+  .modal {
+    background: var(--panel); width: 100%; max-width: 640px;
+    border-radius: 16px 16px 0 0; padding: 20px;
+    max-height: 80vh; overflow-y: auto;
+  }
+  .modal h2 { margin-top: 0; font-size: 17px; }
+  .modal label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+  .modal input[type="text"], .modal select {
+    width: 100%; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid #333947; background: #12141a; color: var(--text);
+    font-size: 14px;
+  }
+  .modal .row { display: flex; gap: 8px; margin-top: 10px; }
+  .modal button {
+    flex: 1; padding: 10px; border-radius: 10px; border: none;
+    font-size: 14px; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-danger { background: #4a2229; color: #ff9b9b; }
+  .btn-secondary { background: #2a2e37; color: var(--text); }
+  .mem-item {
+    background: #12141a; border-radius: 10px; padding: 8px 10px;
+    margin-bottom: 6px; font-size: 13px; color: #cfd3da;
+  }
+  .mem-item span.imp { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  #memList { margin-top: 10px; }
+  .close-x { position: absolute; top: 14px; right: 16px; }
+  .modal { position: relative; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>AIパートナー</h1>
+    <div style="display:flex; gap:4px;">
+      <button id="openHistory" aria-label="履歴">📜</button>
+      <button id="voiceToggle" aria-label="音声読み上げ切替">🔊</button>
+      <button id="openSettings" aria-label="設定">⚙️</button>
+    </div>
+  </header>
+  <div id="chat"></div>
+  <form id="chatForm">
+    <button type="button" id="micBtn" aria-label="音声入力">🎤</button>
+    <input id="msgInput" type="text" placeholder="メッセージを入力..." autocomplete="off" />
+    <button type="submit" id="sendBtn">送信</button>
+  </form>
+</div>
 
-  // --- 会話履歴(文脈)をGeminiの形式に変換 ---
-  let contents = [];
-  let lastRole = null;
+<!-- 履歴モーダル -->
+<div class="modal-backdrop hidden" id="historyModal">
+  <div class="modal" style="height: 80vh; display: flex; flex-direction: column;">
+    <button class="close-x" id="closeHistory">✕</button>
+    <h2>過去の会話履歴</h2>
+    <div id="historyList" style="flex: 1; overflow-y: auto; margin-top: 10px; display: flex; flex-direction: column; gap: 10px; padding-right: 4px;"></div>
+    <div class="row" style="margin-top:15px;">
+      <button class="btn-danger" id="clearHistoryBtn">履歴を全て削除</button>
+    </div>
+  </div>
+</div>
 
-  history.forEach((msg, index) => {
-    if (msg.role === 'system') return;
-    let role = msg.role === 'ai' ? 'model' : 'user';
-    
-    let textToUse = msg.text;
-    if (index === history.length - 1 && role === 'user') {
-       textToUse = prompt;
+<!-- 設定モーダル -->
+<div class="modal-backdrop hidden" id="settingsModal">
+  <div class="modal">
+    <button class="close-x" id="closeSettings">✕</button>
+    <h2>設定</h2>
+
+    <label for="gasUrlInput">バックエンドAPI (GASのURL)</label>
+    <input type="text" id="gasUrlInput" placeholder="https://script.google.com/macros/s/..." />
+    <div class="row">
+      <button class="btn-primary" id="saveKeyBtn">保存</button>
+      <button class="btn-danger" id="clearKeyBtn">削除</button>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-top:8px;">
+      ご自身でデプロイしたGASの「ウェブアプリURL」を入力してください。<br>APIキーはGAS側に安全に隠蔽されています。
+    </p>
+
+    <label for="voiceSelect">読み上げ音声の種類</label>
+    <select id="voiceSelect"></select>
+
+    <label>保存されている長期記憶</label>
+    <div id="memList"></div>
+    <div class="row">
+      <button class="btn-danger" id="clearMemBtn">記憶を全て削除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY_GAS_URL = 'ai_partner_gas_url';
+const STORAGE_KEY_MEM = 'ai_partner_memory';
+const STORAGE_KEY_CHAT = 'ai_partner_chat_log';
+const STORAGE_KEY_VOICE = 'ai_partner_voice_enabled';
+const STORAGE_KEY_VOICE_URI = 'ai_partner_voice_uri';
+
+const APP_START_TRIGGER = '(system: ユーザーが今アプリを開きました。過去の記憶を踏まえて、あなたから自然に一言話しかけてください。この指示文自体には言及しないでください。)';
+
+const DECAY_DAYS = 14;
+const MAX_MEMORIES = 100;
+const CORE_MEMORY_COUNT = 15;
+const PROMPT_MEMORY_LIMIT = 40;
+
+const SYSTEM_INSTRUCTION = `
+あなたはユーザー専用のAIパートナーです。
+親しみやすく自然な日本語で会話してください。
+会話をただのQ&Aではなく、継続的な関係として扱ってください。
+
+重要:
+- ユーザーの発言に自然に反応し、機械的な定型文を避ける
+- 過去の記憶が関連するときだけ自然に利用する
+- 知らないことを知っているふりをしない
+- 記憶にない個人情報を捏造しない
+- ユーザーの感情を決めつけない
+- 回答は通常、簡潔すぎず長すぎない
+- 日本語で回答する
+- ユーザーの発言が「(system: ...)」で始まる場合、それはアプリ起動を知らせる内部合図であり、ユーザー本人の発言ではない。その場合は過去の記憶を踏まえて自然に一言話しかけてください。合図の文面自体には触れないこと。
+
+記憶の管理について(重要):
+提示される「現在保存されている長期記憶」には、それぞれ[id]が付いています。
+新しい発言を踏まえて、以下のいずれかのアクションを memory_updates に含めてください。
+
+- "add"    : 全く新しい情報を追加する(idは不要)
+- "update" : 既存の記憶が古くなった・間違っていた・より正確な情報に更新すべき場合、既存の[id]を指定して内容を書き換える
+- "delete" : 既存の記憶がもう有効ではなく、更新でもなく単純に不要になった場合、既存の[id]を指定して削除する
+
+同じ内容・似た内容の記憶が既にある場合は、新規追加(add)ではなく、その記憶を更新(update)して1つにまとめてください。
+
+あなたの出力はJSONのみ:
+{
+  "reply": "ユーザーへの自然な返答",
+  "memory_updates": [
+    { "action": "add", "text": "今後も役立つ、ユーザーについての具体的な記憶", "importance": 1 },
+    { "action": "update", "id": "既存記憶のid", "text": "更新後の内容", "importance": 3 },
+    { "action": "delete", "id": "既存記憶のid" }
+  ]
+}
+
+importanceは1〜5。一時的な話題は記憶しないでください。記憶の変更が不要なら memory_updates は空配列にしてください。
+`;
+
+function generateId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+function migrateMemory(raw) {
+  const now = Date.now();
+  return raw.map(m => ({
+    id: m.id || generateId(),
+    text: String(m.text || '').trim(),
+    importance: Math.max(1, Math.min(5, parseInt(m.importance, 10) || 3)),
+    created_at: m.created_at || now,
+    updated_at: m.updated_at || m.created_at || now
+  })).filter(m => m.text);
+}
+
+function loadMemory() {
+  try { return migrateMemory(JSON.parse(localStorage.getItem(STORAGE_KEY_MEM) || '[]')); }
+  catch { return []; }
+}
+
+function daysSince(timestamp) {
+  return Math.max(0, (Date.now() - timestamp) / (1000 * 60 * 60 * 24));
+}
+
+function effectiveImportance(m) {
+  const decay = Math.floor(daysSince(m.updated_at) / DECAY_DAYS);
+  return Math.max(1, m.importance - decay);
+}
+
+function pruneAndPersist(memories) {
+  const sorted = [...memories].sort((a, b) => {
+    const diff = effectiveImportance(b) - effectiveImportance(a);
+    return diff !== 0 ? diff : b.updated_at - a.updated_at;
+  });
+  const trimmed = sorted.slice(0, MAX_MEMORIES);
+  localStorage.setItem(STORAGE_KEY_MEM, JSON.stringify(trimmed));
+  return trimmed;
+}
+
+function applyMemoryActions(existingMemories, actions) {
+  const map = new Map(existingMemories.map(m => [m.id, m]));
+  const now = Date.now();
+
+  for (const act of actions) {
+    if (!act || typeof act !== 'object') continue;
+    const action = act.action || 'add';
+
+    if (action === 'delete') {
+      if (act.id && map.has(act.id)) map.delete(act.id);
+      continue;
     }
 
-    if (role === lastRole) {
-       contents[contents.length - 1].parts[0].text += "\n\n" + textToUse;
+    if (action === 'update' && act.id && map.has(act.id)) {
+      const old = map.get(act.id);
+      const text = String(act.text || '').trim() || old.text;
+      const importance = act.importance != null
+        ? Math.max(1, Math.min(5, parseInt(act.importance, 10) || old.importance))
+        : old.importance;
+      map.set(act.id, { ...old, text, importance, updated_at: now });
+      continue;
+    }
+
+    const text = String(act.text || '').trim();
+    if (!text) continue;
+    const id = generateId();
+    const importance = Math.max(1, Math.min(5, parseInt(act.importance, 10) || 3));
+    map.set(id, { id, text, importance, created_at: now, updated_at: now });
+  }
+  return Array.from(map.values());
+}
+
+function bigrams(str) {
+  const s = String(str || '').replace(/\s+/g, '');
+  if (s.length < 2) return s ? [s] : [];
+  const arr = [];
+  for (let i = 0; i < s.length - 1; i++) arr.push(s.substring(i, i + 2));
+  return arr;
+}
+
+function diceCoefficient(a, b) {
+  const bgA = bigrams(a);
+  const bgB = bigrams(b);
+  if (bgA.length === 0 || bgB.length === 0) return 0;
+  const counts = new Map();
+  for (const bg of bgB) counts.set(bg, (counts.get(bg) || 0) + 1);
+  let matches = 0;
+  for (const bg of bgA) {
+    const c = counts.get(bg);
+    if (c > 0) { matches++; counts.set(bg, c - 1); }
+  }
+  return (2 * matches) / (bgA.length + bgB.length);
+}
+
+function selectMemoriesForPrompt(userMessage, memories) {
+  const withScore = memories.map(m => ({ m, eff: effectiveImportance(m) }));
+  withScore.sort((a, b) => b.eff - a.eff);
+
+  const core = withScore.slice(0, CORE_MEMORY_COUNT).map(x => x.m);
+  const coreIds = new Set(core.map(m => m.id));
+
+  const rest = withScore.filter(x => !coreIds.has(x.m.id));
+  const relevanceScored = rest.map(x => ({
+    m: x.m,
+    score: diceCoefficient(userMessage, x.m.text) * 5 + x.eff
+  }));
+  relevanceScored.sort((a, b) => b.score - a.score);
+
+  const remainingSlots = Math.max(0, PROMPT_MEMORY_LIMIT - core.length);
+  const relevant = relevanceScored.slice(0, remainingSlots).map(x => x.m);
+
+  return [...core, ...relevant];
+}
+
+function formatRelativeDays(timestamp) {
+  const d = Math.floor(daysSince(timestamp));
+  if (d <= 0) return '今日';
+  if (d === 1) return '1日前';
+  return `${d}日前`;
+}
+
+function buildPrompt(userMessage, allMemories) {
+  const selected = selectMemoriesForPrompt(userMessage, allMemories);
+  const memText = selected.map(m =>
+    `- [id:${m.id}] ${m.text} (重要度 ${effectiveImportance(m)}/5, 更新: ${formatRelativeDays(m.updated_at)})`
+  ).join('\n') || '（まだ長期記憶はありません）';
+  return `現在保存されている長期記憶:\n${memText}\n\n今回のユーザー発言:\n${userMessage}`;
+}
+
+// ★ ここがGASと通信する関数（履歴送信対応版） ★
+async function callGemini(userMessage) {
+  const gasUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
+  if (!gasUrl) throw new Error('NO_GAS_URL');
+  
+  const memories = loadMemory();
+  const prompt = buildPrompt(userMessage, memories);
+
+  // ★ 直近20件の会話履歴を取得してバックエンド(GAS)に送る ★
+  const recentLog = chatLog.slice(-20);
+
+  const body = {
+    prompt: prompt,
+    history: recentLog,
+    systemInstruction: SYSTEM_INSTRUCTION
+  };
+
+  const res = await fetch(gasUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(body)
+  });
+
+  const raw = await res.text();
+  let parsed;
+  try {
+    const cleaned = raw.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error('モデルの応答を解析できませんでした。');
+  }
+
+  if (parsed.error) {
+    throw new Error(parsed.error);
+  }
+
+  const reply = String(parsed.reply || '').trim();
+  const actions = Array.isArray(parsed.memory_updates) ? parsed.memory_updates : [];
+
+  if (!reply) throw new Error('有効な返答が得られませんでした。');
+
+  if (actions.length) {
+    const merged = applyMemoryActions(memories, actions);
+    pruneAndPersist(merged);
+  }
+
+  return reply;
+}
+
+// ---- UI wiring ----
+const chatEl = document.getElementById('chat');
+const formEl = document.getElementById('chatForm');
+const inputEl = document.getElementById('msgInput');
+const sendBtn = document.getElementById('sendBtn');
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.textContent = text;
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function loadChatLog() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY_CHAT) || '[]'); }
+  catch { return []; }
+}
+function saveChatLog(log) {
+  localStorage.setItem(STORAGE_KEY_CHAT, JSON.stringify(log.slice(-200)));
+}
+
+let chatLog = loadChatLog();
+
+if (localStorage.getItem(STORAGE_KEY_GAS_URL)) {
+  triggerOpeningMessage();
+} else {
+  addMessage('system', '初期設定が必要です。右上の⚙️から「GASのWebアプリURL」を設定してください。');
+}
+
+async function triggerOpeningMessage() {
+  sendBtn.disabled = true;
+  const thinkingEl = addMessage('system', '…考え中…');
+  try {
+    const reply = await callGemini(APP_START_TRIGGER);
+    thinkingEl.remove();
+    addMessage('ai', reply);
+    chatLog.push({ role: 'ai', text: reply });
+    saveChatLog(chatLog);
+    speakText(reply);
+  } catch (err) {
+    thinkingEl.remove();
+    if (err.message === 'NO_GAS_URL') {
+      addMessage('system', 'GASのURLが未設定です。右上の⚙️から設定してください。');
     } else {
-       contents.push({ role: role, parts: [{ text: textToUse }] });
-       lastRole = role;
+      addMessage('system', `エラー: ${err.message}`);
+    }
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+formEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = inputEl.value.trim();
+  if (!text) return;
+
+  addMessage('user', text);
+  chatLog.push({ role: 'user', text });
+  saveChatLog(chatLog);
+  inputEl.value = '';
+  sendBtn.disabled = true;
+
+  const thinkingEl = addMessage('system', '…考え中…');
+
+  try {
+    const reply = await callGemini(text);
+    thinkingEl.remove();
+    addMessage('ai', reply);
+    chatLog.push({ role: 'ai', text: reply });
+    saveChatLog(chatLog);
+    speakText(reply);
+  } catch (err) {
+    thinkingEl.remove();
+    if (err.message === 'NO_GAS_URL') {
+      addMessage('system', 'GASのURLが未設定です。右上の⚙️から設定してください。');
+      openSettingsModal();
+    } else {
+      addMessage('system', `エラー: ${err.message}`);
+    }
+  } finally {
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+});
+
+// ---- 履歴モーダル ----
+const historyModal = document.getElementById('historyModal');
+const historyList = document.getElementById('historyList');
+
+function renderHistoryList() {
+  historyList.innerHTML = '';
+  const log = loadChatLog();
+  if (log.length === 0) {
+    historyList.innerHTML = '<p style="color:var(--muted);font-size:13px;">履歴はありません。</p>';
+    return;
+  }
+  log.forEach(m => {
+    const div = document.createElement('div');
+    div.className = `msg ${m.role}`;
+    div.textContent = m.text;
+    historyList.appendChild(div);
+  });
+  historyList.scrollTop = historyList.scrollHeight;
+}
+
+document.getElementById('openHistory').addEventListener('click', () => {
+  renderHistoryList();
+  historyModal.classList.remove('hidden');
+});
+document.getElementById('closeHistory').addEventListener('click', () => {
+  historyModal.classList.add('hidden');
+});
+historyModal.addEventListener('click', (e) => {
+  if (e.target === historyModal) historyModal.classList.add('hidden');
+});
+document.getElementById('clearHistoryBtn').addEventListener('click', () => {
+  if (confirm('会話履歴を全て削除しますか？\n(現在のチャット画面には影響しません)')) {
+    localStorage.removeItem(STORAGE_KEY_CHAT);
+    chatLog = [];
+    renderHistoryList();
+  }
+});
+
+// ---- 設定モーダル ----
+const settingsModal = document.getElementById('settingsModal');
+const gasUrlInput = document.getElementById('gasUrlInput');
+const memList = document.getElementById('memList');
+
+function renderMemList() {
+  const memories = loadMemory().sort((a, b) => effectiveImportance(b) - effectiveImportance(a));
+  memList.innerHTML = '';
+  if (memories.length === 0) {
+    memList.innerHTML = '<p style="color:var(--muted);font-size:13px;">まだ記憶はありません。</p>';
+    return;
+  }
+  memories.forEach(m => {
+    const div = document.createElement('div');
+    div.className = 'mem-item';
+
+    const textDiv = document.createElement('div');
+    textDiv.textContent = m.text;
+    div.appendChild(textDiv);
+
+    const eff = effectiveImportance(m);
+    const decayNote = eff < m.importance ? `(老朽化により実効${eff})` : '';
+    const span = document.createElement('span');
+    span.className = 'imp';
+    span.textContent = `重要度 ${m.importance}/5 ${decayNote} ・更新: ${formatRelativeDays(m.updated_at)}`;
+    div.appendChild(span);
+
+    const delBtn = document.createElement('button');
+    delBtn.textContent = '削除';
+    delBtn.style.cssText = 'display:block;margin-top:6px;background:#3a2229;color:#ff9b9b;border:none;border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer;';
+    delBtn.addEventListener('click', () => {
+      const remaining = loadMemory().filter(x => x.id !== m.id);
+      localStorage.setItem(STORAGE_KEY_MEM, JSON.stringify(remaining));
+      renderMemList();
+    });
+    div.appendChild(delBtn);
+
+    memList.appendChild(div);
+  });
+}
+
+function openSettingsModal() {
+  const existing = localStorage.getItem(STORAGE_KEY_GAS_URL) || '';
+  gasUrlInput.value = existing;
+  renderMemList();
+  settingsModal.classList.remove('hidden');
+}
+function closeSettingsModal() {
+  settingsModal.classList.add('hidden');
+}
+
+document.getElementById('openSettings').addEventListener('click', openSettingsModal);
+document.getElementById('closeSettings').addEventListener('click', closeSettingsModal);
+settingsModal.addEventListener('click', (e) => {
+  if (e.target === settingsModal) closeSettingsModal();
+});
+
+document.getElementById('saveKeyBtn').addEventListener('click', () => {
+  const url = gasUrlInput.value.trim();
+  if (!url) { alert('GASのURLを入力してください。'); return; }
+  localStorage.setItem(STORAGE_KEY_GAS_URL, url);
+  closeSettingsModal();
+});
+
+document.getElementById('clearKeyBtn').addEventListener('click', () => {
+  if (confirm('保存済みのGASのURLを削除しますか？')) {
+    localStorage.removeItem(STORAGE_KEY_GAS_URL);
+    gasUrlInput.value = '';
+  }
+});
+
+document.getElementById('clearMemBtn').addEventListener('click', () => {
+  if (confirm('全ての長期記憶を削除しますか？この操作は元に戻せません。')) {
+    localStorage.removeItem(STORAGE_KEY_MEM);
+    renderMemList();
+  }
+});
+
+// ---- 音声読み上げ & 声の選択機能 ----
+let voiceEnabled = localStorage.getItem(STORAGE_KEY_VOICE) !== '0';
+const voiceToggleBtn = document.getElementById('voiceToggle');
+const voiceSelect = document.getElementById('voiceSelect');
+let availableVoices = [];
+
+function populateVoices() {
+  if (!window.speechSynthesis) return;
+  availableVoices = speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('ja'));
+  voiceSelect.innerHTML = '';
+  
+  if (availableVoices.length === 0) {
+    const opt = document.createElement('option');
+    opt.textContent = '利用可能な日本語音声がありません';
+    voiceSelect.appendChild(opt);
+    return;
+  }
+
+  availableVoices.forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v.voiceURI;
+    opt.textContent = `${v.name} (${v.lang})`;
+    voiceSelect.appendChild(opt);
+  });
+
+  const savedURI = localStorage.getItem(STORAGE_KEY_VOICE_URI);
+  if (savedURI && availableVoices.find(v => v.voiceURI === savedURI)) {
+    voiceSelect.value = savedURI;
+  }
+}
+
+if (window.speechSynthesis) {
+  populateVoices();
+  speechSynthesis.addEventListener('voiceschanged', populateVoices);
+} else {
+  voiceEnabled = false;
+}
+
+voiceSelect.addEventListener('change', () => {
+  localStorage.setItem(STORAGE_KEY_VOICE_URI, voiceSelect.value);
+});
+
+function updateVoiceToggleUI() {
+  voiceToggleBtn.textContent = voiceEnabled ? '🔊' : '🔇';
+  voiceToggleBtn.classList.toggle('muted', !voiceEnabled);
+  voiceToggleBtn.setAttribute('aria-label', voiceEnabled ? '音声読み上げオン(タップでオフ)' : '音声読み上げオフ(タップでオン)');
+}
+if (!window.speechSynthesis) {
+  voiceToggleBtn.disabled = true;
+  voiceToggleBtn.title = 'このブラウザは音声読み上げに対応していません';
+}
+updateVoiceToggleUI();
+
+voiceToggleBtn.addEventListener('click', () => {
+  voiceEnabled = !voiceEnabled;
+  localStorage.setItem(STORAGE_KEY_VOICE, voiceEnabled ? '1' : '0');
+  if (!voiceEnabled && window.speechSynthesis) speechSynthesis.cancel();
+  updateVoiceToggleUI();
+});
+
+function speakText(text) {
+  if (!voiceEnabled || !window.speechSynthesis || !text) return;
+  try {
+    speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'ja-JP';
+    
+    const savedURI = localStorage.getItem(STORAGE_KEY_VOICE_URI);
+    const selectedVoice = availableVoices.find(v => v.voiceURI === savedURI);
+    if (selectedVoice) {
+      utter.voice = selectedVoice;
+    } else if (availableVoices.length > 0) {
+      utter.voice = availableVoices[0];
+    }
+    
+    speechSynthesis.speak(utter);
+  } catch (err) {
+    console.error('speech synthesis error:', err);
+  }
+}
+
+// ---- 音声入力 ----
+const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
+const micBtn = document.getElementById('micBtn');
+let recognition = null;
+let isListening = false;
+
+if (SpeechRecognitionImpl) {
+  recognition = new SpeechRecognitionImpl();
+  recognition.lang = 'ja-JP';
+  recognition.interimResults = false;
+  recognition.continuous = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.addEventListener('result', (e) => {
+    const transcript = e.results[0][0].transcript.trim();
+    if (transcript) {
+      inputEl.value = transcript;
+      if (formEl.requestSubmit) formEl.requestSubmit();
+      else formEl.dispatchEvent(new Event('submit', { cancelable: true }));
+    }
+  });
+  recognition.addEventListener('end', () => {
+    isListening = false;
+    micBtn.classList.remove('listening');
+  });
+  recognition.addEventListener('error', (e) => {
+    isListening = false;
+    micBtn.classList.remove('listening');
+    if (e.error !== 'no-speech' && e.error !== 'aborted') {
+      addMessage('system', `音声入力エラー: ${e.error}`);
     }
   });
 
-  if (contents.length === 0) {
-    contents.push({ role: 'user', parts: [{ text: prompt }] });
-  }
-
-  const payload = {
-    contents: contents,
-    systemInstruction: { role: 'system', parts: [{ text: sysInst }] },
-    // tools: [{ googleSearch: {} }], // ★ エラー回避のため検索機能は一旦オフ
-    generationConfig: { responseMimeType: 'application/json' }
-  };
-
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  try {
-    const res = UrlFetchApp.fetch(url, options);
-    const data = JSON.parse(res.getContentText());
-
-    if (res.getResponseCode() !== 200) {
-      return ContentService.createTextOutput(JSON.stringify({ error: data.error?.message || "APIエラー" }))
-                           .setMimeType(ContentService.MimeType.JSON);
+  micBtn.addEventListener('click', () => {
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    if (isListening) {
+      recognition.stop();
+      return;
     }
-
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-    return ContentService.createTextOutput(rawText).setMimeType(ContentService.MimeType.JSON);
-
-  } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({ error: error.toString() }))
-                         .setMimeType(ContentService.MimeType.JSON);
-  }
+    try {
+      recognition.start();
+      isListening = true;
+      micBtn.classList.add('listening');
+    } catch (err) {
+      console.error('speech recognition start error:', err);
+    }
+  });
+} else {
+  micBtn.disabled = true;
+  micBtn.title = 'このブラウザは音声入力に対応していません';
 }
+</script>
+</body>
+</html>
