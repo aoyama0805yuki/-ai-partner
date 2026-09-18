@@ -193,14 +193,14 @@ const STORAGE_KEY_SESSIONS = 'ai_partner_sessions';
 const STORAGE_KEY_VOICE = 'ai_partner_voice_enabled';
 const STORAGE_KEY_VOICE_URI = 'ai_partner_voice_uri';
 
-const APP_START_TRIGGER = '(system: ユーザーが今アプリを開きました。過去の記憶を踏まえて、あなたから自然に一言話しかけてください。この指示文自体には言及しないでください。)';
+// ★ ここを修正！ 最初の挨拶は「当たり障りなく」するように指示 ★
+const APP_START_TRIGGER = '(system: ユーザーが今アプリを開きました。まずは親しみやすい挨拶と、「最近どう？」「何かお話しする？」といった当たり障りのない軽い質問で、短く自然に話しかけてください。最初の挨拶では過去の記憶や具体的な話題を引っ張り出さないこと。この指示文自体には言及しないでください。)';
 
 const DECAY_DAYS = 14;
 const MAX_MEMORIES = 100;
 const CORE_MEMORY_COUNT = 15;
 const PROMPT_MEMORY_LIMIT = 40;
 
-// ★ AIを「リード役」に性格変更 ★
 const SYSTEM_INSTRUCTION = `
 あなたはユーザーの親しいAIパートナーです。
 会話をただのQ&Aや相槌で終わらせず、親友とのやり取りのように盛り上げてください。
@@ -361,7 +361,6 @@ function getSession(id) {
   return sessions.find(s => s.id === id);
 }
 
-// ★ エラー回避の超強化 ★
 async function callGemini(userMessage) {
   const gasUrl = localStorage.getItem(STORAGE_KEY_GAS_URL);
   if (!gasUrl) throw new Error('NO_GAS_URL');
@@ -394,12 +393,8 @@ async function callGemini(userMessage) {
       parsed = JSON.parse(raw);
     }
   } catch {
-    // 【改良】AIがルールを忘れて普通のテキストで喋ってしまった場合、エラーにせずそのまま表示！
     console.warn("【JSONパース失敗。生テキストを返答として表示します】", raw);
-    
-    // 不要なマークダウンを取り除く
     let cleanText = raw.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-    
     parsed = {
       reply: cleanText,
       memory_updates: []
